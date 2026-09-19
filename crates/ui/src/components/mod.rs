@@ -1,0 +1,9 @@
+pub mod connection_form;
+pub mod connection_list;
+pub mod footer_bar;
+pub mod header_bar;
+pub mod history_panel;
+pub mod results_panel;
+pub mod sql_editor;
+pub mod sql_completion;
+pub mod tables_tree;

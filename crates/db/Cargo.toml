@@ -1,0 +1,29 @@
+[package]
+name = "dbstudio-db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dbstudio-core = { path = "../core" }
+anyhow = { workspace = true }
+async-lock = { workspace = true }
+smol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+sqlformat = { workspace = true }
+sqlx = { workspace = true }
+rusqlite = { workspace = true }
+tiberius = { workspace = true }
+oracle = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "macros", "io-util"] }
+russh = { workspace = true }
+russh-keys = { version = "0.45" }
+async-trait = "0.1"
+dirs = { workspace = true }
+rust_decimal = "1"

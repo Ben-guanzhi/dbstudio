@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/db",
+    "crates/storage",
+    "crates/ui",
+    "crates/app",
+]
+
+[workspace.dependencies]
+# GPUI ecosystem
+gpui = { package = "gpui-pre", version = "0.3.1" }
+gpui-component = { version = "0.6.1", features = ["tree-sitter-languages"] }
+gpui-platform = { package = "gpui-pre-platform", version = "0.3.4" }
+gpui-kit-assets = "0.6.1"
+
+# Database drivers
+sqlx = { version = "0.8", features = ["runtime-async-std", "tls-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid", "rust_decimal", "json"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tiberius = { version = "0.12", default-features = false, features = ["rustls", "tokio", "tds73"] }
+russh = "0.45"
+oracle = "0.5"
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Async runtime
+smol = "2"
+async-lock = "3"
+async-channel = "2"
+async-fs = "2"
+
+# Infrastructure
+keyring = { version = "3", features = ["windows-native"] }
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+dirs = "5"
+tree-sitter = "0.26"
+tree-sitter-sequel = "0.3"
+lsp-types = "0.97"
+sqlformat = "0.3"
+csv = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+url = "2"

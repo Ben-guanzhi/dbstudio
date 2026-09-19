@@ -1,0 +1,26 @@
+[package]
+name = "dbstudio"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dbstudio"
+path = "src/main.rs"
+
+[dependencies]
+dbstudio-core = { path = "../core" }
+dbstudio-db = { path = "../db" }
+dbstudio-storage = { path = "../storage" }
+dbstudio-ui = { path = "../ui" }
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-platform = { workspace = true }
+gpui-kit-assets = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+rust-embed = { workspace = true }
+smol = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target/
+
+# Scratch output files
+*.out
+
+# Local databases and exports
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / tool configs
+.claude/
