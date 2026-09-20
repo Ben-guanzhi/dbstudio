@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dbstudio_core::models::{ConnectionConfig, DatabaseType};
+use dbstudio_core::models::{ConnectionConfig, DatabaseType, SslMode};
 use sqlx::{Pool, Sqlite};
 
 const KEYRING_SERVICE: &str = dbstudio_core::NAMESPACE;
@@ -9,7 +9,8 @@ const LEGACY_KEYRING_SERVICE: &str = dbstudio_core::LEGACY_NAMESPACE;
 /// [`Row`] and the `INSERT` statement in [`ConnectionsRepository::save`].
 const SELECT_COLUMNS: &str = "id, name, db_type, host, port, database, username,
                               ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_type,
-                              ssh_key_path, extra_params, color, created_at, updated_at";
+                              ssh_key_path, extra_params, color, environment, ssl_mode,
+                              group_name, tags, plugin_name, created_at, updated_at";
 
 pub struct ConnectionsRepository<'a> {
     pool: &'a Pool<Sqlite>,
@@ -125,12 +126,18 @@ impl<'a> ConnectionsRepository<'a> {
             self.set_password(&info.id, password)?;
         }
 
+        let tags_json = if info.tags.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&info.tags).ok()
+        };
         sqlx::query(
             "INSERT OR REPLACE INTO connections
              (id, name, db_type, host, port, database, username,
               ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_type,
-              ssh_key_path, extra_params, color, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+              ssh_key_path, extra_params, color, environment, ssl_mode, group_name, tags, plugin_name,
+              created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         )
         .bind(&info.id)
         .bind(&info.name)
@@ -147,6 +154,11 @@ impl<'a> ConnectionsRepository<'a> {
         .bind(&info.ssh_key_path)
         .bind(&info.extra_params)
         .bind(&info.color)
+        .bind(info.environment.as_str())
+        .bind(info.ssl_mode.as_str())
+        .bind(&info.group)
+        .bind(&tags_json)
+        .bind(&info.plugin_name)
         .bind(&info.created_at)
         .bind(&info.updated_at)
         .execute(self.pool)
@@ -192,6 +204,11 @@ struct Row {
     ssh_key_path: Option<String>,
     extra_params: Option<String>,
     color: Option<String>,
+    environment: String,
+    ssl_mode: String,
+    group_name: Option<String>,
+    tags: Option<String>,
+    plugin_name: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -203,6 +220,14 @@ impl Row {
             .parse::<DatabaseType>()
             .unwrap_or(DatabaseType::PostgreSQL);
 
+        let environment = dbstudio_core::models::Environment::from_wire(&self.environment);
+        let ssl_mode = SslMode::from_wire(&self.ssl_mode);
+        let tags = self
+            .tags
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default();
+
         ConnectionConfig {
             id: self.id,
             name: self.name,
@@ -212,6 +237,10 @@ impl Row {
             database: self.database,
             username: self.username,
             color: self.color,
+            environment,
+            ssl_mode,
+            group: self.group_name,
+            tags,
             ssh_enabled: self.ssh_enabled != 0,
             ssh_host: self.ssh_host,
             ssh_port: self.ssh_port.map(|p| p as u16),
@@ -219,6 +248,7 @@ impl Row {
             ssh_auth_type: self.ssh_auth_type,
             ssh_key_path: self.ssh_key_path,
             extra_params: self.extra_params,
+            plugin_name: self.plugin_name,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }

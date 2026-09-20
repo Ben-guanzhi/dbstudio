@@ -5,6 +5,7 @@ use sqlx::{Pool, Sqlite};
 use std::path::PathBuf;
 
 use crate::connections::ConnectionsRepository;
+use crate::favorites::FavoritesRepository;
 use crate::history::QueryHistoryRepository;
 
 static STORE: OnceCell<AppStore> = OnceCell::new();
@@ -93,6 +94,11 @@ impl AppStore {
                 ssh_key_path TEXT,
                 extra_params TEXT,
                 color TEXT,
+                environment TEXT NOT NULL DEFAULT 'dev',
+                ssl_mode TEXT NOT NULL DEFAULT 'disable',
+                group_name TEXT,
+                tags TEXT,
+                plugin_name TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -100,19 +106,14 @@ impl AppStore {
         .execute(&self.pool)
         .await?;
 
-        // Migration: databases created by older versions have no
-        // `extra_params` column yet; add it on first run when missing.
-        let has_col: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM pragma_table_info('connections')
-             WHERE name = 'extra_params'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        if has_col.0 == 0 {
-            sqlx::query("ALTER TABLE connections ADD COLUMN extra_params TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
+        // Migrations for databases created by older versions: columns added
+        // incrementally are created on first run when missing.
+        Self::ensure_column(&self.pool, "extra_params", "TEXT").await?;
+        Self::ensure_column(&self.pool, "environment", "TEXT NOT NULL DEFAULT 'dev'").await?;
+        Self::ensure_column(&self.pool, "ssl_mode", "TEXT NOT NULL DEFAULT 'disable'").await?;
+        Self::ensure_column(&self.pool, "group_name", "TEXT").await?;
+        Self::ensure_column(&self.pool, "tags", "TEXT").await?;
+        Self::ensure_column(&self.pool, "plugin_name", "TEXT").await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS query_history (
@@ -144,6 +145,36 @@ impl AppStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS favorites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sql TEXT NOT NULL,
+                connection_id TEXT,
+                created_at TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Add a column to `connections` if it does not exist yet.
+    ///
+    /// Used to migrate stores created before a column was introduced.
+    async fn ensure_column(pool: &Pool<Sqlite>, name: &str, ddl: &str) -> Result<()> {
+        let (n,): (i64,) = sqlx::query_as(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name = ?1"
+        ))
+        .bind(name)
+        .fetch_one(pool)
+        .await?;
+        if n == 0 {
+            sqlx::query(&format!("ALTER TABLE connections ADD COLUMN {name} {ddl}"))
+                .execute(pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -153,6 +184,10 @@ impl AppStore {
 
     pub fn history(&self) -> QueryHistoryRepository<'_> {
         QueryHistoryRepository::new(&self.pool)
+    }
+
+    pub fn favorites(&self) -> FavoritesRepository<'_> {
+        FavoritesRepository::new(&self.pool)
     }
 
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {

@@ -16,3 +16,6 @@ sqlx = { workspace = true }
 async-lock = { workspace = true }
 smol = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+async-std = { version = "1" }
