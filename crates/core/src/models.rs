@@ -155,6 +155,103 @@ impl SshAuthType {
     }
 }
 
+/// The environment a connection targets.
+///
+/// Used to drive the Safe Mode guards in the UI: connections marked
+/// `Production` (and, optionally, `Staging`) get extra confirmation prompts
+/// before destructive statements are run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Environment {
+    #[default]
+    Dev,
+    Staging,
+    Production,
+}
+
+impl Environment {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Environment::Dev => "dev",
+            Environment::Staging => "staging",
+            Environment::Production => "production",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "staging" => Environment::Staging,
+            "production" | "prod" => Environment::Production,
+            _ => Environment::Dev,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Environment::Dev => "Development",
+            Environment::Staging => "Staging",
+            Environment::Production => "Production",
+        }
+    }
+
+    pub fn is_production(&self) -> bool {
+        matches!(self, Environment::Production)
+    }
+}
+
+/// TLS/SSL mode for encrypted connections.
+///
+/// This is a first-class connection option (mirrored on the connection form),
+/// distinct from the free-form `extra_params` passthrough. `Require` and above
+/// force encryption; the `Verify*` modes also validate the server certificate
+/// (subject/CA) where the driver accepts such parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SslMode {
+    #[default]
+    Disable,
+    Require,
+    VerifyCa,
+    VerifyFull,
+}
+
+impl SslMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SslMode::Disable => "disable",
+            SslMode::Require => "require",
+            SslMode::VerifyCa => "verify_ca",
+            SslMode::VerifyFull => "verify_full",
+        }
+    }
+
+    /// Parse the persisted/wire spelling of the SSL mode.
+    ///
+    /// Unknown or empty values fall back to [`SslMode::Disable`], keeping old
+    /// stored connections (which predate the column) unencrypted.
+    pub fn from_wire(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "require" | "required" | "prefer" => SslMode::Require,
+            "verify_ca" | "verify-ca" => SslMode::VerifyCa,
+            "verify_full" | "verify-full" | "verify_identity" | "verify-identity" | "full" => SslMode::VerifyFull,
+            _ => SslMode::Disable,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            SslMode::Disable => "Disable",
+            SslMode::Require => "Require",
+            SslMode::VerifyCa => "Verify CA",
+            SslMode::VerifyFull => "Verify Full",
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        !matches!(self, SslMode::Disable)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: String,
@@ -166,6 +263,14 @@ pub struct ConnectionConfig {
     pub username: String,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub environment: Environment,
+    #[serde(default)]
+    pub ssl_mode: SslMode,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub ssh_enabled: bool,
     #[serde(default)]
     pub ssh_host: Option<String>,
@@ -179,6 +284,11 @@ pub struct ConnectionConfig {
     pub ssh_key_path: Option<String>,
     #[serde(default)]
     pub extra_params: Option<String>,
+    /// Name of a loaded driver plugin to route this connection through. When
+    /// set, [`dbstudio_db::connect`] opens the connection via the plugin
+    /// instead of a built-in engine driver.
+    #[serde(default)]
+    pub plugin_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -195,6 +305,10 @@ impl ConnectionConfig {
             database: String::new(),
             username: String::new(),
             color: None,
+            environment: Environment::Dev,
+            ssl_mode: SslMode::Disable,
+            group: None,
+            tags: Vec::new(),
             ssh_enabled: false,
             ssh_host: None,
             ssh_port: None,
@@ -202,6 +316,7 @@ impl ConnectionConfig {
             ssh_auth_type: None,
             ssh_key_path: None,
             extra_params: None,
+            plugin_name: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -339,5 +454,29 @@ mod tests {
         config.set_extra_params(HashMap::new());
         assert!(config.extra_params.is_none());
         assert!(config.extra_params_map().is_empty());
+    }
+
+    #[test]
+    fn ssl_mode_wire_and_display() {
+        for mode in [
+            SslMode::Disable,
+            SslMode::Require,
+            SslMode::VerifyCa,
+            SslMode::VerifyFull,
+        ] {
+            assert_eq!(SslMode::from_wire(mode.as_str()), mode);
+        }
+        // Lenient parsing for spellings found in the wild.
+        assert_eq!(SslMode::from_wire("prefer"), SslMode::Require);
+        assert_eq!(SslMode::from_wire("verify-identity"), SslMode::VerifyFull);
+        assert_eq!(SslMode::from_wire(""), SslMode::Disable);
+        assert!(SslMode::Disable.is_encrypted() == false);
+        assert!(SslMode::Require.is_encrypted());
+    }
+
+    #[test]
+    fn new_connection_defaults_to_disabled_ssl() {
+        let config = ConnectionConfig::new(DatabaseType::PostgreSQL, "test".to_string());
+        assert_eq!(config.ssl_mode, SslMode::Disable);
     }
 }
