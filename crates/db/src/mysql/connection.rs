@@ -51,6 +51,16 @@ impl MySqlConnection {
             urlencode_credentials(&config.database)
         );
         let extra = extra_params_query(config);
+        let extra = {
+            let ssl = crate::utils::ssl_mode_query(config);
+            if ssl.is_empty() {
+                extra
+            } else if extra.is_empty() {
+                ssl
+            } else {
+                format!("{extra}&{ssl}")
+            }
+        };
         let url = if extra.is_empty() {
             url
         } else if url.contains('?') {

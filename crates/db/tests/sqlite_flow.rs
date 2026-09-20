@@ -20,6 +20,10 @@ fn sqlite_config(path: &str) -> ConnectionConfig {
         database: path.to_string(),
         username: String::new(),
         color: None,
+        environment: dbstudio_core::models::Environment::Dev,
+        ssl_mode: dbstudio_core::models::SslMode::Disable,
+        group: None,
+        tags: Vec::new(),
         ssh_enabled: false,
         ssh_host: None,
         ssh_port: None,
@@ -27,6 +31,7 @@ fn sqlite_config(path: &str) -> ConnectionConfig {
         ssh_auth_type: None,
         ssh_key_path: None,
         extra_params: None,
+        plugin_name: None,
         created_at: now.clone(),
         updated_at: now,
     }

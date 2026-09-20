@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_lock::Mutex;
-use dbstudio_core::models::ConnectionConfig;
+use dbstudio_core::models::{ConnectionConfig, SslMode};
 use dbstudio_core::result::{ResultCell, SqlResult};
 use dbstudio_core::schema::ColumnInfo;
 use std::sync::{Arc, RwLock};
@@ -34,12 +34,23 @@ impl MssqlConnection {
             password.to_string(),
         ));
         cfg.database(config.database.clone());
-        // Require TLS encryption on the wire so credentials and data are not
-        // sent in cleartext. `trust_cert` (as before) skips certificate-chain
-        // validation, which keeps self-signed/private-CA servers working while
-        // still preventing passive eavesdropping.
-        cfg.trust_cert();
-        cfg.encryption(tiberius::EncryptionLevel::Required);
+        // TLS behavior is driven by the connection's first-class `ssl_mode`:
+        // - Disable        -> plaintext (no encryption on the wire)
+        // - Require        -> encrypted, self-signed/private-CA tolerated
+        // - Verify Ca/Full -> encrypted with server certificate-chain
+        //                     validation (no `trust_cert` bypass)
+        match config.ssl_mode {
+            SslMode::Disable => {
+                cfg.encryption(tiberius::EncryptionLevel::Off);
+            }
+            SslMode::Require => {
+                cfg.trust_cert();
+                cfg.encryption(tiberius::EncryptionLevel::Required);
+            }
+            SslMode::VerifyCa | SslMode::VerifyFull => {
+                cfg.encryption(tiberius::EncryptionLevel::Required);
+            }
+        }
 
         let host = endpoint.host.clone();
         let port = endpoint.port;

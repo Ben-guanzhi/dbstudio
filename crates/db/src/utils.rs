@@ -103,6 +103,37 @@ pub fn extra_params_query(config: &ConnectionConfig) -> String {
     parts.join("&")
 }
 
+/// Build the SSL query-string segment for drivers that compose connection URLs,
+/// based on the connection's first-class `ssl_mode` field.
+///
+/// Returns the empty string when encryption is disabled or the engine has no
+/// URL-level SSL knob. The values use each driver's expected spelling:
+/// MySQL wants `ssl-mode=required|verify_ca|verify_identity`, PostgreSQL wants
+/// `sslmode=require|verify-ca|verify-full`. If the user already pinned the same
+/// key via `extra_params`, the explicit field loses (explicit JSON wins).
+pub fn ssl_mode_query(config: &ConnectionConfig) -> String {
+    use dbstudio_core::models::{DatabaseType, SslMode};
+    if !config.ssl_mode.is_encrypted() {
+        return String::new();
+    }
+    let (key, value) = match (config.db_type, config.ssl_mode) {
+        (DatabaseType::MySQL, SslMode::Require) => ("ssl-mode", "required"),
+        (DatabaseType::MySQL, SslMode::VerifyCa) => ("ssl-mode", "verify_ca"),
+        (DatabaseType::MySQL, SslMode::VerifyFull) => ("ssl-mode", "verify_identity"),
+        (DatabaseType::PostgreSQL, SslMode::Require) => ("sslmode", "require"),
+        (DatabaseType::PostgreSQL, SslMode::VerifyCa) => ("sslmode", "verify-ca"),
+        (DatabaseType::PostgreSQL, SslMode::VerifyFull) => ("sslmode", "verify-full"),
+        _ => return String::new(),
+    };
+
+    // If the user explicitly configured the same key through extra_params,
+    // respect their choice instead of appending a conflicting duplicate.
+    if config.extra_params_map().contains_key(key) {
+        return String::new();
+    }
+    format!("{key}={value}")
+}
+
 /// Check if a SQL query is a SELECT statement (or other read-only statement).
 ///
 /// SQL comments before the leading keyword are stripped first, so a `-- ...`

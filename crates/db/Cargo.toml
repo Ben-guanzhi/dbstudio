@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 dbstudio-core = { path = "../core" }
+dbstudio-plugin = { path = "../plugin" }
 anyhow = { workspace = true }
 async-lock = { workspace = true }
 smol = { workspace = true }
