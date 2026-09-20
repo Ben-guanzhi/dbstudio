@@ -1,7 +1,7 @@
 ﻿use super::*;
 
 impl ResultsPanel {
-    pub(super) fn export_csv(&self, cx: &mut Context<Self>) {
+    pub fn export_csv(&self, cx: &mut Context<Self>) {
         let query = match self.result.as_deref() {
             Some(SqlResult::Query(q)) => q.clone(),
             _ => return,
@@ -24,7 +24,7 @@ impl ResultsPanel {
         spawn_export_result(result, path_display, cx);
     }
 
-    pub(super) fn export_json(&self, cx: &mut Context<Self>) {
+    pub fn export_json(&self, cx: &mut Context<Self>) {
         let query = match self.result.as_deref() {
             Some(SqlResult::Query(q)) => q.clone(),
             _ => return,
