@@ -1,16 +1,17 @@
 mod assets;
+mod keybindings;
 mod themes;
 mod window;
 mod workspace;
 
-use gpui::{App, AppContext as _, KeyBinding, actions};
+use gpui::{App, AppContext as _, actions};
 use gpui_component::{Root, theme};
 use themes::*;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 use window::*;
 use workspace::*;
 
-actions!(window, [Quit, ToggleTheme]);
+actions!(window, [Quit, ToggleTheme, OpenCommandPalette, FormatSql, ToggleComment, ToggleAiPanel, UndoLastEdit, RedoLastEdit]);
 
 fn init_logging() {
     let debug = std::env::args().any(|arg| arg == "--debug" || arg == "-d");
@@ -29,6 +30,12 @@ fn init_logging() {
 
 fn main() {
     init_logging();
+
+    // Register the dbstudio:// URL scheme (per-user) at startup.
+    if let Err(e) = dbstudio_ui::url_scheme_registry::register_url_scheme() {
+        tracing::debug!("Failed to register URL scheme: {}", e);
+    }
+
     tracing::info!(
         "Starting {} v{}",
         dbstudio_core::APP_NAME,
@@ -61,10 +68,25 @@ fn main() {
         cx.on_action(|_: &ToggleTheme, cx| {
             toggle_color_mode(None, cx);
         });
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-ctrl-t", ToggleTheme, None),
-        ]);
+        cx.on_action(|_: &OpenCommandPalette, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &FormatSql, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &ToggleComment, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &ToggleAiPanel, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &UndoLastEdit, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &RedoLastEdit, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        keybindings::init(cx);
 
         cx.activate(true);
     });

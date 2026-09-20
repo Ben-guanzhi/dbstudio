@@ -6,6 +6,8 @@ members = [
     "crates/storage",
     "crates/ui",
     "crates/app",
+    "crates/mcp",
+    "crates/plugin",
 ]
 
 [workspace.dependencies]
@@ -22,6 +24,9 @@ tiberius = { version = "0.12", default-features = false, features = ["rustls", "
 russh = "0.45"
 oracle = "0.5"
 tokio-util = { version = "0.7", features = ["compat"] }
+
+# MCP (Model Context Protocol)
+rmcp = { version = "0.4", features = ["server", "macros", "transport-io"] }
 
 # Async runtime
 smol = "2"

@@ -1645,6 +1645,7 @@ name = "dbstudio-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
@@ -1660,6 +1661,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dbstudio-core",
+ "dbstudio-plugin",
  "dirs 5.0.1",
  "futures",
  "oracle",
@@ -1681,11 +1683,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbstudio-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dbstudio-core",
+ "dbstudio-db",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dbstudio-plugin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dbstudio-core",
+ "dirs 5.0.1",
+ "libloading",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "dbstudio-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-lock 3.4.2",
+ "async-std",
  "chrono",
  "dbstudio-core",
  "dirs 5.0.1",
@@ -1723,6 +1755,7 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "tree-sitter-sequel",
+ "url",
  "uuid",
 ]
 
