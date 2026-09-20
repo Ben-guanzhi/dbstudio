@@ -1,4 +1,6 @@
-use dbstudio_core::models::{DatabaseType, ConnectionConfig, SshAuthType, SshConfig};
+use dbstudio_core::models::{
+    DatabaseType, ConnectionConfig, Environment, SslMode, SshAuthType, SshConfig,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
@@ -92,6 +94,106 @@ impl SelectItem for SshAuthOption {
     }
 }
 
+/// Wrapper so we can implement `SelectItem` for the environment choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvironmentOption(pub Environment);
+
+impl SelectItem for EnvironmentOption {
+    type Value = &'static str;
+
+    fn title(&self) -> SharedString {
+        match self.0 {
+            Environment::Dev => "Development",
+            Environment::Staging => "Staging",
+            Environment::Production => "Production",
+        }
+        .into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        match self.0 {
+            Environment::Dev => &"dev",
+            Environment::Staging => &"staging",
+            Environment::Production => &"production",
+        }
+    }
+}
+
+fn all_environments() -> Vec<EnvironmentOption> {
+    vec![
+        EnvironmentOption(Environment::Dev),
+        EnvironmentOption(Environment::Staging),
+        EnvironmentOption(Environment::Production),
+    ]
+}
+
+/// Wrapper so we can implement `SelectItem` for the SSL mode choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SslModeOption(pub SslMode);
+
+impl SelectItem for SslModeOption {
+    type Value = &'static str;
+
+    fn title(&self) -> SharedString {
+        self.0.display_name().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        match self.0 {
+            SslMode::Disable => &"disable",
+            SslMode::Require => &"require",
+            SslMode::VerifyCa => &"verify_ca",
+            SslMode::VerifyFull => &"verify_full",
+        }
+    }
+}
+
+fn all_ssl_modes() -> Vec<SslModeOption> {
+    vec![
+        SslModeOption(SslMode::Disable),
+        SslModeOption(SslMode::Require),
+        SslModeOption(SslMode::VerifyCa),
+        SslModeOption(SslMode::VerifyFull),
+    ]
+}
+
+/// Selectable driver plugin. The `""` option means "use the built-in driver".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginOption {
+    name: String,
+    title: String,
+}
+
+impl PluginOption {
+    /// Options for the plugin select: a leading "none" entry plus one entry
+    /// per loaded plugin. Empty when no plugins are installed.
+    fn all() -> Vec<PluginOption> {
+        let mut options = vec![PluginOption {
+            name: String::new(),
+            title: "None (built-in driver)".to_string(),
+        }];
+        for info in dbstudio_db::plugin_manager().list_plugins() {
+            options.push(PluginOption {
+                name: info.name.clone(),
+                title: format!("{} v{} · {}", info.name, info.version, info.db_type),
+            });
+        }
+        options
+    }
+}
+
+impl SelectItem for PluginOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.title.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.name
+    }
+}
+
 pub enum ConnectionFormEvent {
     Saved,
     Canceled,
@@ -109,6 +211,10 @@ pub struct ConnectionForm {
     db_type_select: Entity<SelectState<Vec<DbTypeOption>>>,
     db_type: DatabaseType,
 
+    // Driver plugin
+    plugin_select: Option<Entity<SelectState<Vec<PluginOption>>>>,
+    plugin_name: Option<String>,
+
     // SSH state
     ssh_enabled: bool,
     ssh_host: Entity<InputState>,
@@ -120,6 +226,14 @@ pub struct ConnectionForm {
     ssh_password: Entity<InputState>,
     ssh_key_passphrase: Entity<InputState>,
     extra_params: Entity<InputState>,
+
+    // Environment / grouping
+    environment: Environment,
+    environment_select: Entity<SelectState<Vec<EnvironmentOption>>>,
+    ssl_mode: SslMode,
+    ssl_mode_select: Entity<SelectState<Vec<SslModeOption>>>,
+    group: Entity<InputState>,
+    tags: Entity<InputState>,
 
     active_connection: Option<dbstudio_storage::types::ConnectionInfo>,
     is_testing: bool,
@@ -182,6 +296,29 @@ impl ConnectionForm {
         cx.subscribe_in(&db_type_select, window, Self::on_db_type_change)
             .detach();
 
+        // Driver plugin select (hidden when no plugins are installed).
+        let plugin_options = PluginOption::all();
+        let initial_plugin = connection.as_ref().and_then(|c| c.plugin_name.clone());
+        let plugin_select = if plugin_options.len() <= 1 {
+            None
+        } else {
+            let plugin_index = initial_plugin
+                .as_ref()
+                .and_then(|name| plugin_options.iter().position(|o| &o.name == name))
+                .unwrap_or(0);
+            let select = cx.new(|cx| {
+                SelectState::new(
+                    plugin_options,
+                    Some(IndexPath::new(plugin_index)),
+                    window,
+                    cx,
+                )
+            });
+            cx.subscribe_in(&select, window, Self::on_plugin_change)
+                .detach();
+            Some(select)
+        };
+
         // SSH inputs
         let ssh_host = Self::text_input(window, cx, "ssh.example.com", false);
         let ssh_port = Self::text_input(window, cx, "22", false);
@@ -210,6 +347,31 @@ impl ConnectionForm {
         let extra_params =
             Self::text_input(window, cx, r#"{"ssl-mode":"require"}"#, false);
 
+        // Environment / grouping inputs
+        let initial_env = connection.as_ref().map(|c| c.environment).unwrap_or(Environment::Dev);
+        let envs = all_environments();
+        let env_index = envs.iter().position(|e| e.0 == initial_env).unwrap_or(0);
+        let environment_select = cx.new(|cx| {
+            SelectState::new(envs, Some(IndexPath::new(env_index)), window, cx)
+        });
+        cx.subscribe_in(&environment_select, window, Self::on_env_change)
+            .detach();
+
+        let initial_ssl = connection
+            .as_ref()
+            .map(|c| c.ssl_mode)
+            .unwrap_or(SslMode::Disable);
+        let ssl_modes = all_ssl_modes();
+        let ssl_index = ssl_modes.iter().position(|m| m.0 == initial_ssl).unwrap_or(0);
+        let ssl_mode_select = cx.new(|cx| {
+            SelectState::new(ssl_modes, Some(IndexPath::new(ssl_index)), window, cx)
+        });
+        cx.subscribe_in(&ssl_mode_select, window, Self::on_ssl_mode_change)
+            .detach();
+
+        let group = Self::text_input(window, cx, "e.g. backend, analytics", false);
+        let tags = Self::text_input(window, cx, "comma-separated tags", false);
+
         let mut form = Self {
             name,
             host,
@@ -219,6 +381,8 @@ impl ConnectionForm {
             port,
             db_type_select,
             db_type: initial_type,
+            plugin_select,
+            plugin_name: initial_plugin,
             ssh_enabled: connection
                 .as_ref()
                 .map(|c| c.ssh_enabled)
@@ -232,6 +396,12 @@ impl ConnectionForm {
             ssh_password,
             ssh_key_passphrase,
             extra_params,
+            environment: initial_env,
+            environment_select,
+            ssl_mode: initial_ssl,
+            ssl_mode_select,
+            group,
+            tags,
             active_connection: connection.clone(),
             is_testing: false,
         };
@@ -280,6 +450,54 @@ impl ConnectionForm {
         }
     }
 
+    fn on_plugin_change(
+        &mut self,
+        _: &Entity<SelectState<Vec<PluginOption>>>,
+        event: &SelectEvent<Vec<PluginOption>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(value)) = event {
+            self.plugin_name = if value.is_empty() {
+                None
+            } else {
+                Some(value.clone())
+            };
+            cx.notify();
+        }
+    }
+
+    fn on_env_change(
+        &mut self,
+        _: &Entity<SelectState<Vec<EnvironmentOption>>>,
+        event: &SelectEvent<Vec<EnvironmentOption>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(value)) = event {
+            self.environment = match *value {
+                "dev" => Environment::Dev,
+                "staging" => Environment::Staging,
+                "production" => Environment::Production,
+                _ => Environment::Dev,
+            };
+            cx.notify();
+        }
+    }
+
+    fn on_ssl_mode_change(
+        &mut self,
+        _: &Entity<SelectState<Vec<SslModeOption>>>,
+        event: &SelectEvent<Vec<SslModeOption>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(value)) = event {
+            self.ssl_mode = SslMode::from_wire(value);
+            cx.notify();
+        }
+    }
+
     fn populate_from(
         &mut self,
         connection: dbstudio_storage::types::ConnectionInfo,
@@ -318,6 +536,31 @@ impl ConnectionForm {
                     cx,
                 )
             });
+        }
+
+        // Environment / grouping
+        self.environment = connection.environment;
+        let envs = all_environments();
+        let env_index = envs.iter().position(|e| e.0 == connection.environment).unwrap_or(0);
+        self.environment_select.update(cx, |this, cx| this.set_selected_index(Some(IndexPath::new(env_index)), window, cx));
+        let ssl_index = all_ssl_modes().iter().position(|m| m.0 == connection.ssl_mode).unwrap_or(0);
+        self.ssl_mode_select.update(cx, |this, cx| this.set_selected_index(Some(IndexPath::new(ssl_index)), window, cx));
+        if let Some(ref select) = self.plugin_select {
+            if let Some(ref name) = connection.plugin_name {
+                let plugin_index = PluginOption::all()
+                    .iter()
+                    .position(|o| &o.name == name)
+                    .unwrap_or(0);
+                select.update(cx, |this, cx| {
+                    this.set_selected_index(Some(IndexPath::new(plugin_index)), window, cx)
+                });
+            }
+        }
+        if let Some(ref g) = connection.group {
+            self.group.update(cx, |this, cx| this.set_value(g.clone(), window, cx));
+        }
+        if !connection.tags.is_empty() {
+            self.tags.update(cx, |this, cx| this.set_value(connection.tags.join(", "), window, cx));
         }
     }
 
@@ -369,6 +612,19 @@ impl ConnectionForm {
             database,
             username,
             color: None,
+            environment: self.environment,
+            ssl_mode: self.ssl_mode,
+            group: {
+                let g = self.group.read(cx).value().trim().to_string();
+                if g.is_empty() { None } else { Some(g) }
+            },
+            tags: {
+                let raw = self.tags.read(cx).value().to_string();
+                raw.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            },
             ssh_enabled: ssh.is_some(),
             ssh_host: ssh.as_ref().map(|s| s.host.clone()),
             ssh_port: ssh.as_ref().map(|s| s.port),
@@ -376,6 +632,7 @@ impl ConnectionForm {
             ssh_auth_type: ssh.as_ref().map(|s| s.auth_type.as_str().to_string()),
             ssh_key_path: ssh.and_then(|s| s.key_path),
             extra_params,
+            plugin_name: self.plugin_name.clone(),
             created_at,
             updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         })
@@ -706,6 +963,18 @@ impl Render for ConnectionForm {
                             .required(true)
                             .child(Select::new(&self.db_type_select)),
                     )
+                    .when(self.plugin_select.is_some(), |f| {
+                        if let Some(select) = &self.plugin_select {
+                            f.child(
+                                field()
+                                    .col_span(2)
+                                    .label("Driver Plugin")
+                                    .child(Select::new(select)),
+                            )
+                        } else {
+                            f
+                        }
+                    })
                     .child(
                         field()
                             .col_span(2)
@@ -746,6 +1015,33 @@ impl Render for ConnectionForm {
                     }),
             )
             .child(div().mt_4().child(self.render_ssh_section(cx)))
+            .child(
+                v_form()
+                    .columns(2)
+                    .small()
+                    .mt_4()
+                    .child(
+                        field()
+                            .label("Environment")
+                            .child(Select::new(&self.environment_select)),
+                    )
+                    .child(
+                        field()
+                            .label("SSL Mode")
+                            .child(Select::new(&self.ssl_mode_select)),
+                    )
+                    .child(
+                        field()
+                            .label("Group")
+                            .child(Input::new(&self.group)),
+                    )
+                    .child(
+                        field()
+                            .col_span(2)
+                            .label("Tags")
+                            .child(Input::new(&self.tags)),
+                    ),
+            )
             .child(actions)
     }
 }

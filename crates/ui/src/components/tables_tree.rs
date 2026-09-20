@@ -1,4 +1,4 @@
-use dbstudio_core::schema::TableInfo;
+﻿use dbstudio_core::schema::TableInfo;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
@@ -57,7 +57,7 @@ impl TablesTree {
 
         let _subscriptions = vec![
             cx.observe_global::<AppState>(move |this, cx| {
-                let tables = cx.global::<AppState>().tables.clone();
+                let tables = cx.global::<AppState>().tables().to_vec();
                 this.tables = tables;
                 this.has_tables = !this.tables.is_empty();
                 this.rebuild_items(cx);
@@ -74,8 +74,8 @@ impl TablesTree {
             tree_state,
             search_input,
             selected_item: None,
-            has_tables: !cx.global::<AppState>().tables.is_empty(),
-            tables: cx.global::<AppState>().tables.clone(),
+            has_tables: !cx.global::<AppState>().tables().is_empty(),
+            tables: cx.global::<AppState>().tables().to_vec(),
             search_query: String::new(),
             _subscriptions,
         }

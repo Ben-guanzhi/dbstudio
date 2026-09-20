@@ -34,15 +34,15 @@ impl HeaderBar {
     fn new(cx: &mut Context<Self>) -> Self {
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            this.connection_state = state.connection_state;
-            this.active_connection_name = state.active_connection_name.clone();
+            this.connection_state = state.connection_state();
+            this.active_connection_name = state.active_connection_name().cloned();
             cx.notify();
         })];
 
         let state = cx.global::<AppState>();
         Self {
-            connection_state: state.connection_state,
-            active_connection_name: state.active_connection_name.clone(),
+            connection_state: state.connection_state(),
+            active_connection_name: state.active_connection_name().cloned(),
             _subscriptions,
         }
     }

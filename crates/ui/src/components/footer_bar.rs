@@ -13,6 +13,13 @@ use gpui_component::{
 
 use crate::state::AppState;
 
+pub enum FooterEvent {
+    ExportDatabase,
+    ImportDatabase,
+}
+
+impl EventEmitter<FooterEvent> for FooterBar {}
+
 pub struct FooterBar {
     connection_state: crate::state::ConnectionStatus,
     active_database: Option<String>,
@@ -30,8 +37,8 @@ impl FooterBar {
     fn new(cx: &mut Context<Self>) -> Self {
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            this.connection_state = state.connection_state;
-            this.active_database = state.active_database.clone();
+            this.connection_state = state.connection_state();
+            this.active_database = state.active_database().cloned();
             this.status_message = state.status_message.clone();
             this.show_tables = state.show_tables;
             this.show_history = state.show_history;
@@ -40,8 +47,8 @@ impl FooterBar {
 
         let state = cx.global::<AppState>();
         Self {
-            connection_state: state.connection_state,
-            active_database: state.active_database.clone(),
+            connection_state: state.connection_state(),
+            active_database: state.active_database().cloned(),
             status_message: state.status_message.clone(),
             show_tables: state.show_tables,
             show_history: state.show_history,
@@ -91,6 +98,26 @@ impl Render for FooterBar {
             .on_click(cx.listener(|_this, _: &ClickEvent, _, _cx| {
             }));
 
+        let export_button = Button::new("footer-export")
+            .icon(Icon::new(IconName::ArrowDown))
+            .small()
+            .ghost()
+            .tooltip("Export Database")
+            .disabled(!is_connected)
+            .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
+                cx.emit(FooterEvent::ExportDatabase);
+            }));
+
+        let import_button = Button::new("footer-import")
+            .icon(Icon::new(IconName::ArrowUp))
+            .small()
+            .ghost()
+            .tooltip("Import Database")
+            .disabled(!is_connected)
+            .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
+                cx.emit(FooterEvent::ImportDatabase);
+            }));
+
         let db_label = self.active_database.clone().unwrap_or_default();
 
         div()
@@ -129,7 +156,10 @@ impl Render for FooterBar {
                             .child(db_label),
                     )
                     .when(is_connected, |d| {
-                        d.child(history_button).child(agent_button)
+                        d.child(history_button)
+                            .child(agent_button)
+                            .child(import_button)
+                            .child(export_button)
                     }),
             )
     }

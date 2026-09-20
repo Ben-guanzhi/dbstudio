@@ -26,3 +26,4 @@ futures = { workspace = true }
 csv = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
+url = { workspace = true }

@@ -1,3 +1,5 @@
+pub mod ai_panel;
+pub mod command_palette;
 pub mod connection_form;
 pub mod connection_list;
 pub mod footer_bar;
