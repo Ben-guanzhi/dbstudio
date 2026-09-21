@@ -13,7 +13,9 @@ use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
 use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
-use dbstudio_ui::components::tabs::{TabsBar, TabsEvent};
+use dbstudio_ui::components::tabs::{
+    TabClose, TabCloseOthers, TabDuplicateInNewWindow, TabsBar, TabsEvent,
+};
 use dbstudio_ui::state::{
     connect, delete_connection, execute_query, export_database, import_database, load_table_schema,
     select_database, AppState, ConnectionStatus,
@@ -319,6 +321,27 @@ impl Workspace {
             TabsEvent::Close(id) => {
                 dbstudio_ui::state::close_session(*id, cx);
             }
+            TabsEvent::CloseOthers(id) => {
+                let sessions_to_close: Vec<u64> = cx
+                    .global::<AppState>()
+                    .sessions
+                    .iter()
+                    .filter(|s| s.id != *id)
+                    .map(|s| s.id)
+                    .collect();
+                for sid in sessions_to_close {
+                    dbstudio_ui::state::close_session(sid, cx);
+                }
+            }
+            TabsEvent::DuplicateInNewWindow(id) => {
+                let session_id = *id;
+                crate::open_workspace_window(cx);
+                // The new window starts with its own session; switch it to the duplicated one.
+                let new_window_id = cx.global::<AppState>().windows.keys().max().copied();
+                if let Some(new_wid) = new_window_id {
+                    dbstudio_ui::state::switch_session(session_id, new_wid, cx);
+                }
+            }
             TabsEvent::NewTab => {
                 if self.is_active {
                     if !self.show_form {
@@ -615,6 +638,34 @@ impl Render for Workspace {
         .on_action(cx.listener(|this, _: &RedoLastEdit, _window, cx| {
             dbstudio_ui::state::redo_last_edit(this.window_id, cx);
         }))
+        .on_action(cx.listener(|_this, action: &TabClose, _window, cx| {
+            dbstudio_ui::state::close_session(action.id, cx);
+            cx.notify();
+        }))
+        .on_action(cx.listener(|_this, action: &TabCloseOthers, _window, cx| {
+            let sessions_to_close: Vec<u64> = cx
+                .global::<AppState>()
+                .sessions
+                .iter()
+                .filter(|s| s.id != action.id)
+                .map(|s| s.id)
+                .collect();
+            for sid in sessions_to_close {
+                dbstudio_ui::state::close_session(sid, cx);
+            }
+            cx.notify();
+        }))
+        .on_action(
+            cx.listener(|_this, action: &TabDuplicateInNewWindow, _window, cx| {
+                let session_id = action.id;
+                crate::open_workspace_window(cx);
+                let new_window_id = cx.global::<AppState>().windows.keys().max().copied();
+                if let Some(new_wid) = new_window_id {
+                    dbstudio_ui::state::switch_session(session_id, new_wid, cx);
+                }
+                cx.notify();
+            }),
+        )
         .children(Root::render_notification_layer(window, cx))
     }
 }

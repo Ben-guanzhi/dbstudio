@@ -2,10 +2,31 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex, ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
+    h_flex,
+    menu::ContextMenuExt,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
+use serde::Deserialize;
 
 use crate::state::{AppState, ConnectionStatus};
+
+#[derive(Clone, Action, PartialEq, Eq, Deserialize)]
+#[action(namespace = tabs, no_json)]
+pub struct TabClose {
+    pub id: u64,
+}
+
+#[derive(Clone, Action, PartialEq, Eq, Deserialize)]
+#[action(namespace = tabs, no_json)]
+pub struct TabCloseOthers {
+    pub id: u64,
+}
+
+#[derive(Clone, Action, PartialEq, Eq, Deserialize)]
+#[action(namespace = tabs, no_json)]
+pub struct TabDuplicateInNewWindow {
+    pub id: u64,
+}
 
 #[derive(Debug, Clone)]
 pub enum TabsEvent {
@@ -13,6 +34,10 @@ pub enum TabsEvent {
     Select(u64),
     /// Close (disconnect + drop) the session tab with this id.
     Close(u64),
+    /// Close all other tabs except this one.
+    CloseOthers(u64),
+    /// Duplicate the session in a new window.
+    DuplicateInNewWindow(u64),
     /// Open the new-connection form for a fresh tab.
     NewTab,
 }
@@ -96,52 +121,32 @@ impl Render for TabsBar {
             return div().id("tabs-bar-empty").into_any_element();
         }
 
-        // Pass 1: snapshot per-tab visual data (immutable borrows only).
-        struct TabView {
-            id: u64,
-            label: String,
-            is_active: bool,
-            dot: Hsla,
-        }
         let muted_fg = cx.theme().muted_foreground;
         let success = cx.theme().button_success;
         let warning = cx.theme().button_warning;
-        let views: Vec<TabView> = self
-            .sessions
-            .iter()
-            .map(|tab| {
-                let is_active = self.active == Some(tab.id);
-                let dot = TabsBar::status_color(tab.status, success, warning, muted_fg);
-                let label = match &tab.database {
-                    Some(db) if !db.is_empty() => format!("{} · {}", tab.name, db),
-                    _ => tab.name.clone(),
-                };
-                TabView {
-                    id: tab.id,
-                    label,
-                    is_active,
-                    dot,
-                }
-            })
-            .collect();
 
-        // Pass 2: build elements (mutable borrows via listeners, sequential).
         let mut track = div();
-        for v in views {
-            let id = v.id;
-            let bg = if v.is_active {
+        for tab in self.sessions.iter() {
+            let id = tab.id;
+            let is_active = self.active == Some(id);
+            let dot = TabsBar::status_color(tab.status, success, warning, muted_fg);
+            let label = match &tab.database {
+                Some(db) if !db.is_empty() => format!("{} · {}", tab.name, db),
+                _ => tab.name.clone(),
+            };
+            let bg = if is_active {
                 cx.theme().background
             } else {
                 cx.theme().title_bar
             };
-            let fg = if v.is_active {
+            let fg = if is_active {
                 cx.theme().foreground
             } else {
                 cx.theme().muted_foreground
             };
             let muted = cx.theme().muted_foreground;
             let hover = cx.theme().list_hover;
-            let tab = div()
+            let tab_element = div()
                 .id(("session-tab", id))
                 .flex()
                 .items_center()
@@ -153,19 +158,17 @@ impl Render for TabsBar {
                 .flex_shrink_0()
                 .rounded_full()
                 .bg(bg)
-                .when(!v.is_active, move |d| d.hover(move |s| s.bg(hover)))
-                .when(v.is_active, |d| {
-                    d.border_1().border_color(cx.theme().border)
-                })
-                .child(div().size(px(7.0)).flex_shrink_0().rounded_full().bg(v.dot))
+                .when(!is_active, move |d| d.hover(move |s| s.bg(hover)))
+                .when(is_active, |d| d.border_1().border_color(cx.theme().border))
+                .child(div().size(px(7.0)).flex_shrink_0().rounded_full().bg(dot))
                 .child(
                     div()
                         .text_xs()
                         .overflow_hidden()
                         .text_ellipsis()
-                        .when(v.is_active, |d| d.font_medium())
+                        .when(is_active, |d| d.font_medium())
                         .text_color(fg)
-                        .child(v.label),
+                        .child(label),
                 )
                 .child(
                     div()
@@ -183,8 +186,16 @@ impl Render for TabsBar {
                 )
                 .on_click(cx.listener(move |_this, _: &ClickEvent, _, cx| {
                     cx.emit(TabsEvent::Select(id));
-                }));
-            track = track.child(tab);
+                }))
+                .context_menu(move |menu, _window, _cx| {
+                    menu.menu("Close", Box::new(TabClose { id }))
+                        .menu("Close Others", Box::new(TabCloseOthers { id }))
+                        .menu(
+                            "Duplicate in New Window",
+                            Box::new(TabDuplicateInNewWindow { id }),
+                        )
+                });
+            track = track.child(tab_element);
         }
 
         h_flex()
