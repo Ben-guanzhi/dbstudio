@@ -1,3 +1,4 @@
+pub mod ai_settings;
 pub mod connections;
 pub mod favorites;
 pub mod history;

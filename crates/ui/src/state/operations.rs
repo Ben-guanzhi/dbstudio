@@ -1,5 +1,6 @@
 ﻿use std::sync::Arc;
 
+use dbstudio_core::ai::LlmConfig;
 use dbstudio_core::models::{DatabaseType, ConnectionConfig};
 use dbstudio_core::result::{QueryResult, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::{DatabaseInfo, TableSchema};
@@ -247,6 +248,26 @@ pub fn toggle_safe_mode(cx: &mut App) {
             if state.safe_mode { "enabled" } else { "disabled" }
         );
     });
+}
+
+/// Persist the AI provider configuration (settings table + OS keyring) and
+/// publish it back into the global state for the AI panel.
+pub fn save_ai_config(config: LlmConfig, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let result = async {
+            let store = AppStore::singleton().await?;
+            dbstudio_storage::ai_settings::save_ai_config(store.pool(), &config).await
+        }
+        .await;
+        cx.update_global::<AppState, _>(|state, _cx| match result {
+            Ok(()) => {
+                state.ai_config = config;
+                state.status_message = "AI configuration saved".to_string();
+            }
+            Err(e) => state.status_message = format!("Failed to save AI configuration: {e}"),
+        });
+    })
+    .detach();
 }
 
 /// Execute a SQL query without the safe-mode guard. Used internally for

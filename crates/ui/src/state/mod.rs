@@ -4,6 +4,7 @@ pub mod operations;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dbstudio_core::ai::LlmConfig;
 use dbstudio_core::models::Environment;
 use dbstudio_core::result::SqlResult;
 use dbstudio_core::schema::{DatabaseInfo, TableInfo, TableSchema};
@@ -101,6 +102,8 @@ pub struct AppState {
     /// Global safe-mode toggle. When enabled, every write statement requires
     /// confirmation before execution regardless of the connection environment.
     pub safe_mode: bool,
+    /// Configured LLM provider used by the AI panel (openai / ollama / mock).
+    pub ai_config: LlmConfig,
 }
 
 impl AppState {
@@ -201,6 +204,7 @@ impl AppState {
             pending_dangerous_query: None,
             favorites: Vec::new(),
             safe_mode: true,
+            ai_config: LlmConfig::default(),
         });
 
         cx.spawn(async move |cx| {
@@ -222,6 +226,10 @@ impl AppState {
                             }
                         });
                     }
+                    let ai_config = dbstudio_storage::ai_settings::load_ai_config(store.pool()).await;
+                    cx.update_global::<AppState, _>(|app_state, _cx| {
+                        app_state.ai_config = ai_config;
+                    });
                 }
                 Err(e) => tracing::error!("Failed to init storage: {}", e),
             }
