@@ -636,6 +636,11 @@ impl ResultsPanel {
             input.set_value(String::new(), window, cx);
         });
         self.editing_original = None;
+        // Highlight the cell as modified pending review
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().mark_modified(display_row, display_col);
+            cx.notify();
+        });
         self.stage_edit(sql, inverse_sql, "UPDATE".to_string(), diff, cx);
     }
 

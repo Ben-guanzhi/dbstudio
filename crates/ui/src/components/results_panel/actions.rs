@@ -411,6 +411,10 @@ impl ResultsPanel {
             });
             crate::state::execute_raw_query(forward, self.window_id, cx);
         }
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().clear_modified();
+            cx.notify();
+        });
         self.show_review_modal = false;
         cx.notify();
     }
@@ -448,6 +452,10 @@ impl ResultsPanel {
         });
         if empty {
             self.show_review_modal = false;
+            self.table.update(cx, |table, cx| {
+                table.delegate_mut().clear_modified();
+                cx.notify();
+            });
         }
         cx.notify();
     }
@@ -458,6 +466,10 @@ impl ResultsPanel {
             if let Some(s) = state.active_session_mut_for(self.window_id) {
                 s.pending_edits.clear();
             }
+        });
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().clear_modified();
+            cx.notify();
         });
         self.show_review_modal = false;
         cx.notify();

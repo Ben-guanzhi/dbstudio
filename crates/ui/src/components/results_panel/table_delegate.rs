@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use dbstudio_core::result::CellType;
 
 use super::*;
@@ -160,6 +162,9 @@ pub struct ResultsTableDelegate {
     filter: String,
     column_filters: Vec<ColumnFilter>,
     filtered_order: Vec<usize>,
+    /// Cells staged as pending edits (display_row, display_col), tinted like
+    /// TablePro's modified-cell highlight while awaiting review.
+    modified_cells: HashSet<(usize, usize)>,
 }
 
 impl ResultsTableDelegate {
@@ -183,6 +188,7 @@ impl ResultsTableDelegate {
             filter: String::new(),
             column_filters: Vec::new(),
             filtered_order: Vec::new(),
+            modified_cells: HashSet::new(),
         }
     }
 
@@ -191,6 +197,7 @@ impl ResultsTableDelegate {
         self.order = (0..self.rows.len()).collect();
         self.sort_col = None;
         self.sort_asc = true;
+        self.modified_cells.clear();
         let mut cols = vec![Column::new("#", "#").width(px(60.0))];
         cols.extend(result.columns.iter().enumerate().map(|(col_ix, col)| {
             let header_len = col.name.chars().count().max(1);
@@ -224,6 +231,16 @@ impl ResultsTableDelegate {
         self.filter.clear();
         self.column_filters.clear();
         self.rebuild_filtered_order();
+    }
+
+    /// Tint a cell as modified-pending-review.
+    pub(super) fn mark_modified(&mut self, display_row: usize, display_col: usize) {
+        self.modified_cells.insert((display_row, display_col));
+    }
+
+    /// Drop all modified-cell tints (after apply / discard / reconnect).
+    pub(super) fn clear_modified(&mut self) {
+        self.modified_cells.clear();
     }
 
     fn rebuild_filtered_order(&mut self) {
@@ -392,14 +409,18 @@ impl TableDelegate for ResultsTableDelegate {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let selected = *self.selected_row_cell.borrow() == Some(row_ix);
+        let striped = row_ix % 2 == 1;
         let cell = self.selected_row_cell.clone();
         div()
             .id(row_ix)
             .cursor_pointer()
             .when(selected, |this| this.bg(gpui::blue().opacity(0.1)))
+            .when(!selected && striped, |this| {
+                this.bg(cx.theme().muted.opacity(0.35))
+            })
             .on_click(move |_event, _window, _app| {
                 *cell.borrow_mut() = Some(row_ix);
             })
@@ -439,6 +460,7 @@ impl TableDelegate for ResultsTableDelegate {
                     cell.value.clone()
                 };
                 let is_null = cell.is_null;
+                let is_modified = self.modified_cells.contains(&(display_row, col_ix));
                 let selected_cell = self.selected_cell.clone();
                 let selected_row_cell = self.selected_row_cell.clone();
                 let last_click = self.last_click.clone();
@@ -446,6 +468,7 @@ impl TableDelegate for ResultsTableDelegate {
                 let click_target = div()
                     .id(format!("cell-{}-{}", display_row, col_ix))
                     .cursor_pointer()
+                    .when(is_modified, |d| d.bg(gpui::yellow().opacity(0.22)))
                     .on_click(move |_event, window, cx| {
                         let now = Instant::now();
                         let is_double = last_click
