@@ -103,10 +103,12 @@ mod tests {
         async_std::task::block_on(async {
             let pool = test_pool("cfg").await;
 
-            let mut config = LlmConfig::default();
-            config.provider = "ollama".into();
-            config.base_url = Some("http://localhost:11434/v1".into());
-            config.model = Some("llama3.1".into());
+            let mut config = LlmConfig {
+                provider: "ollama".into(),
+                base_url: Some("http://localhost:11434/v1".into()),
+                model: Some("llama3.1".into()),
+                ..LlmConfig::default()
+            };
             config.api_key = Some("top-secret".into());
 
             save_ai_config(&pool, &config).await.unwrap();

@@ -11,7 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt as _, util::Subscr
 use window::*;
 use workspace::*;
 
-actions!(window, [Quit, ToggleTheme, OpenCommandPalette, FormatSql, ToggleComment, ToggleAiPanel, UndoLastEdit, RedoLastEdit]);
+actions!(window, [Quit, ToggleTheme, OpenCommandPalette, FormatSql, ToggleComment, ToggleAiPanel, UndoLastEdit, RedoLastEdit, DuplicateLine, MoveLineUp, MoveLineDown]);
 
 fn init_logging() {
     let debug = std::env::args().any(|arg| arg == "--debug" || arg == "-d");
@@ -84,6 +84,15 @@ fn main() {
             // Handled by workspace via on_action on the root div
         });
         cx.on_action(|_: &RedoLastEdit, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &DuplicateLine, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &MoveLineUp, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &MoveLineDown, _cx| {
             // Handled by workspace via on_action on the root div
         });
         keybindings::init(cx);

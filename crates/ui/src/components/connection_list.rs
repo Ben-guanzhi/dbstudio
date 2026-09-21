@@ -9,7 +9,10 @@ use gpui_component::{
     Icon,
     IconName,
     StyledExt as _,
+    button::{Button, ButtonVariants as _},
     h_flex,
+    input::{Input, InputEvent, InputState},
+    Sizable as _,
     v_flex,
 };
 
@@ -25,30 +28,65 @@ pub struct ConnectionList {
     connections: Vec<ConnectionInfo>,
     selected_id: Option<String>,
     collapsed_groups: HashSet<String>,
+    editing_id: Option<String>,
+    group_input: Entity<InputState>,
+    tags_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ConnectionList {
-    pub fn view(_window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(Self::new)
+    pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let group_input = {
+            let window = &mut *window;
+            cx.new(move |cx| {
+                InputState::new(window, cx).placeholder("Group (optional)")
+            })
+        };
+        let tags_input = {
+            let window = &mut *window;
+            cx.new(move |cx| {
+                InputState::new(window, cx).placeholder("Tags, comma separated")
+            })
+        };
+        cx.new(|cx| ConnectionList::new(cx, group_input, tags_input, &*window))
     }
 
-    fn new(cx: &mut Context<Self>) -> Self {
-        let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
-            let state = cx.global::<AppState>();
-            this.connections = state.saved_connections.clone();
-            if let Some(selected) = &this.selected_id {
-                if !this.connections.iter().any(|c| &c.id == selected) {
-                    this.selected_id = None;
+    fn new(
+        cx: &mut Context<Self>,
+        group_input: Entity<InputState>,
+        tags_input: Entity<InputState>,
+        window: &Window,
+    ) -> Self {
+        let mut _subscriptions = vec![
+            cx.observe_global::<AppState>(move |this, cx| {
+                let state = cx.global::<AppState>();
+                this.connections = state.saved_connections.clone();
+                if let Some(selected) = &this.selected_id {
+                    if !this.connections.iter().any(|c| &c.id == selected) {
+                        this.selected_id = None;
+                    }
                 }
-            }
-            cx.notify();
-        })];
+                if let Some(editing) = &this.editing_id {
+                    if !this.connections.iter().any(|c| &c.id == editing) {
+                        this.editing_id = None;
+                    }
+                }
+                cx.notify();
+            }),
+        ];
+
+        _subscriptions.extend([
+            cx.subscribe_in(&group_input, window, Self::on_tag_input_event),
+            cx.subscribe_in(&tags_input, window, Self::on_tag_input_event),
+        ]);
 
         Self {
             connections: cx.global::<AppState>().saved_connections.clone(),
             selected_id: None,
             collapsed_groups: HashSet::new(),
+            editing_id: None,
+            group_input,
+            tags_input,
             _subscriptions,
         }
     }
@@ -89,7 +127,71 @@ impl ConnectionList {
             .child(label)
     }
 
-    fn render_item(&self, ix: usize, info: &ConnectionInfo, cx: &mut Context<Self>) -> impl IntoElement {
+    fn on_tag_input_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::PressEnter { .. }) {
+            self.save_tag_edit(window, cx);
+        }
+    }
+
+    /// Start inline editing of a connection's group/tags (right-click).
+    fn open_tag_edit(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(info) = self.connections.iter().find(|c| c.id == id) else {
+            return;
+        };
+        let group = info.group.clone().unwrap_or_default();
+        let tags = info.tags.join(", ");
+        let group_input = self.group_input.clone();
+        let tags_input = self.tags_input.clone();
+        cx.update_entity(&group_input, |i, cx| {
+            i.set_value(group, window, cx);
+            cx.notify();
+        });
+        cx.update_entity(&tags_input, |i, cx| {
+            i.set_value(tags, window, cx);
+            cx.notify();
+        });
+        self.editing_id = Some(id.to_string());
+        cx.notify();
+    }
+
+    fn save_tag_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editing_id.clone() else {
+            return;
+        };
+        let Some(mut updated) = self.connections.iter().find(|c| c.id == id).cloned() else {
+            self.editing_id = None;
+            return;
+        };
+        let group = self.group_input.read(cx).value().to_string();
+        let tags = self.tags_input.read(cx).value().to_string();
+        updated.group = if group.trim().is_empty() {
+            None
+        } else {
+            Some(group.trim().to_string())
+        };
+        updated.tags = tags
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect();
+        updated.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        self.editing_id = None;
+        crate::state::save_connection(&updated, "", "", "", cx);
+    }
+
+    fn cancel_tag_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_id = None;
+        cx.notify();
+    }
+
+    fn render_item(&mut self, ix: usize, info: &ConnectionInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let is_selected = self.selected_id.as_deref() == Some(info.id.as_str());
         let text_color = if is_selected {
             cx.theme().accent_foreground
@@ -112,6 +214,7 @@ impl ConnectionList {
             )
         };
         let info = info.clone();
+        let info_for_edit = info.clone();
         let env = info.environment;
 
         h_flex()
@@ -159,6 +262,63 @@ impl ConnectionList {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.on_select(&info, window, cx)
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.open_tag_edit(&info_for_edit.id, window, cx);
+                }),
+            )
+    }
+
+    fn render_edit_item(&mut self, info: &ConnectionInfo, cx: &mut Context<Self>) -> impl IntoElement {
+        let env = info.environment;
+        v_flex()
+            .id(("conn-edit", 0usize))
+            .w_full()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .bg(cx.theme().list_even)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(info.name.clone()),
+                    )
+                    .child(self.env_badge(env, cx)),
+            )
+            .child(Input::new(&self.group_input).flex_1().rounded(cx.theme().radius))
+            .child(Input::new(&self.tags_input).flex_1().rounded(cx.theme().radius))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("tag-save")
+                            .label("Save")
+                            .small()
+                            .ghost()
+                            .primary()
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.save_tag_edit(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("tag-cancel")
+                            .label("Cancel")
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.cancel_tag_edit(window, cx);
+                            })),
+                    ),
+            )
     }
 }
 
@@ -189,11 +349,13 @@ impl Render for ConnectionList {
             return items;
         }
 
-        // Group connections by group field
+        // Group connections by group field (from an owned snapshot so the item
+        // renderers below can borrow `self` mutably).
+        let conns = self.connections.clone();
         let mut grouped: BTreeMap<String, Vec<&ConnectionInfo>> = BTreeMap::new();
         let mut ungrouped: Vec<&ConnectionInfo> = Vec::new();
 
-        for info in &self.connections {
+        for info in &conns {
             match &info.group {
                 Some(g) if !g.is_empty() => {
                     grouped.entry(g.clone()).or_default().push(info);
@@ -205,7 +367,12 @@ impl Render for ConnectionList {
         // Render ungrouped connections first
         let mut idx = 0;
         for info in &ungrouped {
-            items = items.child(self.render_item(idx, info, cx));
+            let is_editing = self.editing_id.as_deref() == Some(info.id.as_str());
+            items = items.child(if is_editing {
+                self.render_edit_item(info, cx).into_any_element()
+            } else {
+                self.render_item(idx, info, cx).into_any_element()
+            });
             idx += 1;
         }
 
@@ -241,7 +408,12 @@ impl Render for ConnectionList {
             );
             if !is_collapsed {
                 for info in group_conns {
-                    items = items.child(self.render_item(idx, info, cx));
+                    let is_editing = self.editing_id.as_deref() == Some(info.id.as_str());
+                    items = items.child(if is_editing {
+                        self.render_edit_item(info, cx).into_any_element()
+                    } else {
+                        self.render_item(idx, info, cx).into_any_element()
+                    });
                     idx += 1;
                 }
             }

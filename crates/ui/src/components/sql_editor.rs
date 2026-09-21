@@ -250,6 +250,76 @@ impl Editor {
         });
     }
 
+    /// Line indices [start_line, end_line] covered by the current selection
+    /// (or the cursor line when the selection is empty).
+    fn selected_line_span(&self, cx: &Context<Self>) -> (usize, usize) {
+        let state = self.input_state.read(cx);
+        let selected_range = state.selected_range();
+        let full_text = state.value().to_string();
+        let start = selected_range.start.min(full_text.len());
+        let end = selected_range.end.min(full_text.len());
+        let count_nl = |up_to: usize| full_text[..up_to].bytes().filter(|&b| b == b'\n').count();
+        (count_nl(start), count_nl(end))
+    }
+
+    /// Replace the editor buffer with `text` (resets selection to the end).
+    fn replace_editor_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = self.input_state.clone();
+        cx.update_entity(&entity, |i, cx| {
+            i.set_value(SharedString::from(text), window, cx);
+            cx.notify();
+        });
+    }
+
+    /// Duplicate the selected lines (or the cursor line) below itself.
+    pub fn duplicate_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let full_text = self.input_state.read(cx).value().to_string();
+        let (start_line, end_line) = self.selected_line_span(cx);
+        let mut lines: Vec<String> = full_text.split('\n').map(str::to_string).collect();
+        if lines.is_empty() {
+            return;
+        }
+        let block: Vec<String> = lines[start_line..=end_line].to_vec();
+        lines.splice(end_line + 1..end_line + 1, block);
+        self.replace_editor_text(lines.join("\n"), window, cx);
+    }
+
+    /// Move the selected lines (or the cursor line) up by one line.
+    pub fn move_line_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let full_text = self.input_state.read(cx).value().to_string();
+        let (start_line, end_line) = self.selected_line_span(cx);
+        if start_line == 0 {
+            return;
+        }
+        let lines: Vec<String> = full_text.split('\n').map(str::to_string).collect();
+        let block: Vec<String> = lines[start_line..=end_line].to_vec();
+        let prev = lines[start_line - 1].clone();
+        let mut rebuilt = Vec::with_capacity(lines.len());
+        rebuilt.extend(lines[..start_line - 1].iter().cloned());
+        rebuilt.extend(block);
+        rebuilt.push(prev);
+        rebuilt.extend(lines[end_line + 1..].iter().cloned());
+        self.replace_editor_text(rebuilt.join("\n"), window, cx);
+    }
+
+    /// Move the selected lines (or the cursor line) down by one line.
+    pub fn move_line_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let full_text = self.input_state.read(cx).value().to_string();
+        let (start_line, end_line) = self.selected_line_span(cx);
+        let lines: Vec<String> = full_text.split('\n').map(str::to_string).collect();
+        if end_line + 1 >= lines.len() {
+            return;
+        }
+        let block: Vec<String> = lines[start_line..=end_line].to_vec();
+        let next = lines[end_line + 1].clone();
+        let mut rebuilt = Vec::with_capacity(lines.len());
+        rebuilt.extend(lines[..start_line].iter().cloned());
+        rebuilt.push(next);
+        rebuilt.extend(block);
+        rebuilt.extend(lines[end_line + 2..].iter().cloned());
+        self.replace_editor_text(rebuilt.join("\n"), window, cx);
+    }
+
     fn on_disconnect(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         crate::state::disconnect(cx);
     }

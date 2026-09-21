@@ -1,5 +1,8 @@
 ﻿use dbstudio_storage::types::ConnectionInfo;
-use crate::{FormatSql, OpenCommandPalette, RedoLastEdit, ToggleAiPanel, ToggleComment, UndoLastEdit};
+use crate::{
+    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, RedoLastEdit,
+    ToggleAiPanel, ToggleComment, UndoLastEdit,
+};
 use dbstudio_ui::components::ai_panel::AiPanel;
 use dbstudio_ui::components::connection_form::{ConnectionForm, ConnectionFormEvent};
 use dbstudio_ui::components::connection_list::{ConnectionList, ConnectionListEvent};
@@ -490,6 +493,21 @@ impl Render for Workspace {
         .on_action(cx.listener(|this, _: &ToggleComment, window, cx| {
             this.editor.update(cx, |editor, cx| {
                 editor.toggle_comment(window, cx);
+            });
+        }))
+        .on_action(cx.listener(|this, _: &DuplicateLine, window, cx| {
+            this.editor.update(cx, |editor, cx| {
+                editor.duplicate_line(window, cx);
+            });
+        }))
+        .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| {
+            this.editor.update(cx, |editor, cx| {
+                editor.move_line_up(window, cx);
+            });
+        }))
+        .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| {
+            this.editor.update(cx, |editor, cx| {
+                editor.move_line_down(window, cx);
             });
         }))
         .on_action(cx.listener(|this, _: &ToggleAiPanel, _window, cx| {

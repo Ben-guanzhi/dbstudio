@@ -241,13 +241,26 @@ pub fn reject_dangerous_query(cx: &mut App) {
 /// Toggle the global safe-mode flag. When enabled, write statements are
 /// confirmed before execution in every environment.
 pub fn toggle_safe_mode(cx: &mut App) {
-    cx.update_global::<AppState, _>(|state, _cx| {
+    let new_value = cx.update_global::<AppState, _>(|state, _cx| {
         state.safe_mode = !state.safe_mode;
         state.status_message = format!(
             "Safe Mode {}",
             if state.safe_mode { "enabled" } else { "disabled" }
         );
+        state.safe_mode
     });
+
+    cx.spawn(async move |_cx| {
+        if let Ok(store) = AppStore::singleton().await {
+            let _ = dbstudio_storage::settings::set_setting_bool(
+                store.pool(),
+                "app.safe_mode",
+                new_value,
+            )
+            .await;
+        }
+    })
+    .detach();
 }
 
 /// Persist the AI provider configuration (settings table + OS keyring) and

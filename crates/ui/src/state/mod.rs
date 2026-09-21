@@ -227,8 +227,11 @@ impl AppState {
                         });
                     }
                     let ai_config = dbstudio_storage::ai_settings::load_ai_config(store.pool()).await;
+                    let safe_mode =
+                        dbstudio_storage::settings::get_setting_bool(store.pool(), "app.safe_mode", true).await;
                     cx.update_global::<AppState, _>(|app_state, _cx| {
                         app_state.ai_config = ai_config;
+                        app_state.safe_mode = safe_mode;
                     });
                 }
                 Err(e) => tracing::error!("Failed to init storage: {}", e),

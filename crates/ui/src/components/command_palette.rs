@@ -105,11 +105,21 @@ impl CommandPalette {
             });
         }
 
-        // Add connections
+        // Add connections. The detail carries group and tags so users can
+        // filter by typing a group name or tag.
         for conn in &state.saved_connections {
+            let mut detail = format!("{}@{}", conn.username, conn.host);
+            if let Some(group) = &conn.group {
+                if !group.is_empty() {
+                    detail.push_str(&format!(" · {}", group));
+                }
+            }
+            if !conn.tags.is_empty() {
+                detail.push_str(&format!(" · #{}", conn.tags.join(" #")));
+            }
             self.items.push(PaletteItem {
                 label: conn.name.clone(),
-                detail: Some(format!("{}@{}", conn.username, conn.host)),
+                detail: Some(detail),
                 icon: IconName::Globe,
                 action: PaletteAction::RunCommand(format!("connect:{}", conn.id)),
             });
