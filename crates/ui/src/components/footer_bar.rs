@@ -1,14 +1,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Disableable as _,
-    Icon,
-    IconName,
-    Sizable as _,
-    StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
+    h_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -27,6 +21,8 @@ pub struct FooterBar {
     status_message: String,
     show_tables: bool,
     show_history: bool,
+    vim_mode: bool,
+    safe_mode: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -45,6 +41,8 @@ impl FooterBar {
             this.status_message = state.status_message.clone();
             this.show_tables = ws.show_tables;
             this.show_history = ws.show_history;
+            this.vim_mode = state.vim_mode;
+            this.safe_mode = state.safe_mode;
             cx.notify();
         })];
 
@@ -57,6 +55,8 @@ impl FooterBar {
             status_message: state.status_message.clone(),
             show_tables: ws.show_tables,
             show_history: ws.show_history,
+            vim_mode: state.vim_mode,
+            safe_mode: state.safe_mode,
             _subscriptions,
         }
     }
@@ -70,7 +70,7 @@ impl Render for FooterBar {
             .icon(Icon::new(if self.show_tables {
                 IconName::PanelLeftClose
             } else {
-                IconName::PanelLeftOpen
+                IconName::PanelLeft
             }))
             .small()
             .ghost()
@@ -84,7 +84,7 @@ impl Render for FooterBar {
             .icon(Icon::new(if self.show_history {
                 IconName::PanelRightClose
             } else {
-                IconName::PanelRightOpen
+                IconName::PanelRight
             }))
             .small()
             .ghost()
@@ -92,15 +92,6 @@ impl Render for FooterBar {
             .disabled(!is_connected)
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 crate::state::toggle_history(this.window_id, cx);
-            }));
-
-        let agent_button = Button::new("footer-agent")
-            .icon(Icon::new(IconName::Bot))
-            .small()
-            .ghost()
-            .tooltip("Toggle Agent Panel")
-            .disabled(!is_connected)
-            .on_click(cx.listener(|_this, _: &ClickEvent, _, _cx| {
             }));
 
         let export_button = Button::new("footer-export")
@@ -123,49 +114,89 @@ impl Render for FooterBar {
                 cx.emit(FooterEvent::ImportDatabase);
             }));
 
-        let db_label = self.active_database.clone().unwrap_or_default();
+        // Status readout: connection status + database + message
+        let status_left = {
+            let dot_color = match self.connection_state {
+                crate::state::ConnectionStatus::Connected => cx.theme().button_success,
+                crate::state::ConnectionStatus::Connecting
+                | crate::state::ConnectionStatus::Disconnecting => cx.theme().button_warning,
+                crate::state::ConnectionStatus::Disconnected => cx.theme().muted_foreground,
+            };
+            h_flex()
+                .items_center()
+                .gap_1()
+                .child(div().size(px(7.0)).rounded_full().bg(dot_color))
+                .when(is_connected, |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{}",
+                                self.active_database.clone().unwrap_or_default()
+                            )),
+                    )
+                })
+                .when(!self.status_message.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(" · {}", self.status_message)),
+                    )
+                })
+        };
+
+        // Right cluster: vim/safe badges + panel toggles + export/import
+        let right_cluster = if is_connected {
+            h_flex()
+                .items_center()
+                .gap_1()
+                .when(self.safe_mode, |d| {
+                    d.child(
+                        div()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .bg(cx.theme().accent.opacity(0.15))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_bold()
+                                    .text_color(cx.theme().accent)
+                                    .child("SAFE"),
+                            ),
+                    )
+                })
+                .when(self.vim_mode, |d| {
+                    d.child(
+                        div()
+                            .px_1()
+                            .rounded(px(4.0))
+                            .bg(cx.theme().muted.opacity(0.3))
+                            .child(div().text_xs().font_bold().child("VIM")),
+                    )
+                })
+                .child(tables_button)
+                .child(history_button)
+                .child(import_button)
+                .child(export_button)
+        } else {
+            h_flex().gap_1()
+        };
 
         div()
             .id("footer-bar")
-            .flex()
-            .h_flex()
             .w_full()
-            .justify_between()
+            .h(px(28.0))
+            .flex()
             .items_center()
+            .justify_between()
             .px_2()
-            .py_1()
-            .text_xs()
             .bg(cx.theme().title_bar)
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .when(is_connected, |d| d.child(tables_button))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.status_message.clone()),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(db_label),
-                    )
-                    .when(is_connected, |d| {
-                        d.child(history_button)
-                            .child(agent_button)
-                            .child(import_button)
-                            .child(export_button)
-                    }),
-            )
+            .text_xs()
+            .child(status_left)
+            .child(right_cluster)
     }
 }
