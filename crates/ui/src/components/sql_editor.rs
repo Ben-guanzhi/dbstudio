@@ -479,16 +479,6 @@ impl Render for Editor {
                 this.format_sql(window, cx);
             }));
 
-        let comment_button = Button::new("editor-comment")
-            .icon(Icon::empty().path("icons/message-square.svg"))
-            .small()
-            .ghost()
-            .tooltip("Toggle Comment (Ctrl-/)")
-            .disabled(!has_connection)
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.toggle_comment(window, cx);
-            }));
-
         let favorite_button = Button::new("editor-favorite")
             .icon(Icon::empty().path("icons/star.svg"))
             .small()
@@ -513,20 +503,6 @@ impl Render for Editor {
             .disabled(!has_connection || !ai_configured)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.ai_complete(window, cx);
-            }));
-
-        let vim_button = Button::new("editor-vim")
-            .label("Vim")
-            .small()
-            .ghost()
-            .toggled(self.vim_on)
-            .tooltip(if self.vim_on {
-                "Vim 妯″紡锛歄N 鈥?Esc 鍥炲埌 Normal锛宨/a/o 杩涘叆鎻掑叆"
-            } else {
-                "Vim 妯″紡锛歄FF"
-            })
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.toggle_vim(window, cx);
             }));
 
         let execute_button = Button::new("editor-execute")
@@ -577,10 +553,9 @@ impl Render for Editor {
                     .items_center()
                     .gap_1()
                     .child(format_button)
-                    .child(comment_button)
-                    .child(vim_button)
                     .child(favorite_button)
                     .child(ai_complete_button)
+                    .child(toolbar_divider(cx))
                     .child(execute_button)
                     .child(toolbar_divider(cx))
                     .child(disconnect_button),
