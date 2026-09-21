@@ -1,12 +1,16 @@
 use gpui::{App, KeyBinding};
 
-use crate::{DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, Quit, RedoLastEdit, ToggleAiPanel, ToggleComment, ToggleTheme, UndoLastEdit};
+use crate::{
+    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, NewWindow, OpenCommandPalette, Quit,
+    RedoLastEdit, ToggleAiPanel, ToggleComment, ToggleTheme, UndoLastEdit,
+};
 
 /// Register all default keybindings. Pass the action types via [`KeyBinding::new`].
 ///
 /// This is called once from `main::run` after the actions are defined.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-n", NewWindow, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-ctrl-t", ToggleTheme, None),
         KeyBinding::new("cmd-p", OpenCommandPalette, None),

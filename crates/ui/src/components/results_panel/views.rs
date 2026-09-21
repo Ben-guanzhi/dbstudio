@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 impl ResultsPanel {
     /// Text filter row: keyword box plus a clear button.
@@ -36,7 +36,8 @@ impl ResultsPanel {
     /// Type-aware per-column filter bar: active chips plus an "Add Filter"
     /// composer to append (column, operator, value) filters.
     pub(super) fn render_filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_columns = matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if !q.columns.is_empty());
+        let has_columns =
+            matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if !q.columns.is_empty());
         if !has_columns {
             return div().into_any_element();
         }
@@ -59,7 +60,11 @@ impl ResultsPanel {
                     "{} {} {}",
                     self.result_column_name(filter.column, cx),
                     filter.op.label(),
-                    if filter.op.needs_value() { filter.value.as_str() } else { "" }
+                    if filter.op.needs_value() {
+                        filter.value.as_str()
+                    } else {
+                        ""
+                    }
                 );
                 div()
                     .id(SharedString::from(format!("filter-chip-{ix}")))
@@ -107,8 +112,16 @@ impl ResultsPanel {
         h_flex()
             .gap_1()
             .items_center()
-            .child(Select::new(&self.filter_col_select).small().placeholder("Column"))
-            .child(Select::new(&self.filter_op_select).small().placeholder("Operator"))
+            .child(
+                Select::new(&self.filter_col_select)
+                    .small()
+                    .placeholder("Column"),
+            )
+            .child(
+                Select::new(&self.filter_op_select)
+                    .small()
+                    .placeholder("Operator"),
+            )
             .when(op_needs_value, |this| {
                 this.child(Input::new(&self.filter_value_input).small().w(px(160.0)))
             })
@@ -159,10 +172,7 @@ impl ResultsPanel {
                         query.row_count, query.total_row_count, query.execution_time_ms
                     )
                 } else {
-                    format!(
-                        "{} rows · {} ms",
-                        query.row_count, query.execution_time_ms
-                    )
+                    format!("{} rows · {} ms", query.row_count, query.execution_time_ms)
                 })
                 .into_any_element(),
             _ => div().into_any_element(),
@@ -172,7 +182,8 @@ impl ResultsPanel {
     /// "Load more" button, shown only when the active result was truncated at
     /// the row cap so the user can page through the remaining rows.
     pub(super) fn render_load_more_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let is_truncated = matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if q.truncated);
+        let is_truncated =
+            matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if q.truncated);
         if !is_truncated {
             return div().into_any_element();
         }
@@ -181,13 +192,17 @@ impl ResultsPanel {
             .small()
             .ghost()
             .tooltip("Fetch the next page of rows")
-            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                crate::state::load_more_rows(cx);
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                crate::state::load_more_rows(this.window_id, cx);
             }))
             .into_any_element()
     }
 
-    pub(super) fn render_export_buttons(&self, has_query_results: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_export_buttons(
+        &self,
+        has_query_results: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         h_flex()
             .gap_1()
             .child(self.render_export_button(
@@ -245,11 +260,7 @@ impl ResultsPanel {
                                 .size_4()
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .child(
-                            Label::new(&schema.table_name)
-                                .text_base()
-                                .font_bold(),
-                        ),
+                        .child(Label::new(&schema.table_name).text_base().font_bold()),
                 )
                 .child(
                     v_flex()
@@ -272,9 +283,7 @@ impl ResultsPanel {
                                             .bg(cx.theme().accent),
                                     )
                                 })
-                                .when(col.nullable, |this| {
-                                    this.child(muted_label("NULL", cx))
-                                })
+                                .when(col.nullable, |this| this.child(muted_label("NULL", cx)))
                                 .when(!col.nullable, |this| {
                                     this.child(muted_label("NOT NULL", cx))
                                 })
@@ -342,15 +351,9 @@ impl ResultsPanel {
                             .mt_2()
                             .child(section_header("DDL", cx))
                             .child(
-                                div()
-                                    .p_2()
-                                    .rounded(px(4.0))
-                                    .bg(cx.theme().tiles)
-                                    .child(
-                                        Label::new(sql.clone())
-                                            .text_xs()
-                                            .font_family("monospace"),
-                                    ),
+                                div().p_2().rounded(px(4.0)).bg(cx.theme().tiles).child(
+                                    Label::new(sql.clone()).text_xs().font_family("monospace"),
+                                ),
                             ),
                     )
                 })
@@ -360,7 +363,11 @@ impl ResultsPanel {
         }
     }
 
-    pub(super) fn render_data_content(&self, has_table: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_data_content(
+        &self,
+        has_table: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match self.result.as_deref() {
             None => empty_hint(
                 if has_table {
@@ -423,8 +430,14 @@ impl ResultsPanel {
             }))
     }
 
-    pub(super) fn render_toolbar(&self, has_table: bool, has_schema: bool, has_selection: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let session = cx.global::<AppState>().active_session();
+    pub(super) fn render_toolbar(
+        &self,
+        has_table: bool,
+        has_schema: bool,
+        has_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let session = cx.global::<AppState>().active_session_for(self.window_id);
         let pending_count = session.map(|s| s.pending_edits.len()).unwrap_or(0);
         let has_pending = pending_count > 0;
         let has_undo = session.map(|s| !s.undo_stack.is_empty()).unwrap_or(false);
@@ -440,8 +453,8 @@ impl ResultsPanel {
                     .ghost()
                     .tooltip("Undo last applied edit")
                     .disabled(!has_undo)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        crate::state::undo_last_edit(cx);
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        crate::state::undo_last_edit(this.window_id, cx);
                         cx.notify();
                     })),
             )
@@ -452,8 +465,8 @@ impl ResultsPanel {
                     .ghost()
                     .tooltip("Redo last undone edit")
                     .disabled(!has_redo)
-                    .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                        crate::state::redo_last_edit(cx);
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        crate::state::redo_last_edit(this.window_id, cx);
                         cx.notify();
                     })),
             )
@@ -562,12 +575,7 @@ impl ResultsPanel {
             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.close_insert_modal(cx);
             }))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(gpui::black().opacity(0.4)),
-            )
+            .child(div().absolute().inset_0().bg(gpui::black().opacity(0.4)))
             .child(
                 div()
                     .absolute()
@@ -592,11 +600,7 @@ impl ResultsPanel {
                                 h_flex()
                                     .justify_between()
                                     .items_center()
-                                    .child(
-                                        Label::new(modal_title)
-                                            .text_base()
-                                            .font_bold(),
-                                    )
+                                    .child(Label::new(modal_title).text_base().font_bold())
                                     .child(
                                         Button::new("close-modal")
                                             .icon(Icon::new(IconName::Close).size_3_5())
@@ -609,37 +613,21 @@ impl ResultsPanel {
                                             )),
                                     ),
                             )
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .overflow_y_scrollbar()
-                                    .gap_2()
-                                    .children(
-                                        modal_columns
-                                            .iter()
-                                            .zip(modal_inputs.iter())
-                                            .map(|(col, input)| {
-                                                h_flex()
-                                                    .gap_2()
-                                                    .items_center()
-                                                    .child(
-                                                        div()
-                                                            .w(px(120.0))
-                                                            .child(
-                                                                Label::new(&col.name)
-                                                                    .text_sm(),
-                                                            ),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .child(
-                                                                Input::new(input),
-                                                            ),
-                                                    )
-                                            }),
-                                    ),
-                            )
+                            .child(v_flex().flex_1().overflow_y_scrollbar().gap_2().children(
+                                modal_columns.iter().zip(modal_inputs.iter()).map(
+                                    |(col, input)| {
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .w(px(120.0))
+                                                    .child(Label::new(&col.name).text_sm()),
+                                            )
+                                            .child(div().flex_1().child(Input::new(input)))
+                                    },
+                                ),
+                            ))
                             .child(
                                 h_flex()
                                     .justify_end()
@@ -674,7 +662,7 @@ impl ResultsPanel {
     pub(super) fn render_review_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let edits = cx
             .global::<AppState>()
-            .active_session()
+            .active_session_for(self.window_id)
             .map(|s| s.pending_edits.clone())
             .unwrap_or_default();
         let pending_label = format!("{} pending", edits.len());
@@ -686,12 +674,7 @@ impl ResultsPanel {
             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.toggle_review_modal(cx);
             }))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(gpui::black().opacity(0.4)),
-            )
+            .child(div().absolute().inset_0().bg(gpui::black().opacity(0.4)))
             .child(
                 div()
                     .absolute()
@@ -743,25 +726,20 @@ impl ResultsPanel {
                                             )),
                                     ),
                             )
-                            .child(
-                                if edits.is_empty() {
-                                    empty_hint("No pending changes", cx)
-                                } else {
-                                    v_flex()
-                                        .flex_1()
-                                        .overflow_y_scrollbar()
-                                        .gap_2()
-                                        .children(
-                                            edits
-                                                .iter()
-                                                .enumerate()
-                                                .map(|(ix, edit)| {
-                                                    self.render_review_item(ix, edit, cx)
-                                                }),
-                                        )
-                                        .into_any_element()
-                                },
-                            )
+                            .child(if edits.is_empty() {
+                                empty_hint("No pending changes", cx)
+                            } else {
+                                v_flex()
+                                    .flex_1()
+                                    .overflow_y_scrollbar()
+                                    .gap_2()
+                                    .children(
+                                        edits.iter().enumerate().map(|(ix, edit)| {
+                                            self.render_review_item(ix, edit, cx)
+                                        }),
+                                    )
+                                    .into_any_element()
+                            })
                             .when(!edits.is_empty(), |this| {
                                 this.child(
                                     h_flex()
@@ -829,68 +807,58 @@ impl ResultsPanel {
                     .text_color(cx.theme().foreground)
                     .child(title),
             )
+            .child(match &edit.diff {
+                Some(diff) if !diff.cells.is_empty() => {
+                    v_flex().gap_1().children(diff.cells.iter().map(|cell| {
+                        let op = diff.op;
+                        let old_disp = cell.old_value.as_deref().unwrap_or("NULL");
+                        let new_disp = cell.new_value.as_deref().unwrap_or("NULL");
+                        div()
+                            .text_xs()
+                            .flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .w(px(150.0))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(cell.column.clone()),
+                            )
+                            .child(match op {
+                                DiffOp::Update => div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        div().text_color(gpui::red()).child(old_disp.to_string()),
+                                    )
+                                    .child(div().text_color(cx.theme().muted_foreground).child("→"))
+                                    .child(
+                                        div().text_color(gpui::green()).child(new_disp.to_string()),
+                                    ),
+                                DiffOp::Insert => div()
+                                    .text_color(gpui::green())
+                                    .child(format!("+ {}", new_disp)),
+                                DiffOp::Delete => div()
+                                    .text_color(gpui::red())
+                                    .child(format!("- {}", old_disp)),
+                            })
+                    }))
+                }
+                _ => div()
+                    .text_xs()
+                    .font_family("monospace")
+                    .text_color(cx.theme().muted_foreground)
+                    .child(edit.sql.clone()),
+            })
             .child(
-                match &edit.diff {
-                    Some(diff) if !diff.cells.is_empty() => v_flex()
-                        .gap_1()
-                        .children(diff.cells.iter().map(|cell| {
-                            let op = diff.op;
-                            let old_disp = cell.old_value.as_deref().unwrap_or("NULL");
-                            let new_disp = cell.new_value.as_deref().unwrap_or("NULL");
-                            div()
-                                .text_xs()
-                                .flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .w(px(150.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(cell.column.clone()),
-                                )
-                                .child(match op {
-                                    DiffOp::Update => div()
-                                        .flex()
-                                        .gap_2()
-                                        .child(div().text_color(gpui::red()).child(old_disp.to_string()))
-                                        .child(
-                                            div()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child("→"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_color(gpui::green())
-                                                .child(new_disp.to_string()),
-                                        ),
-                                    DiffOp::Insert => div()
-                                        .text_color(gpui::green())
-                                        .child(format!("+ {}", new_disp)),
-                                    DiffOp::Delete => div()
-                                        .text_color(gpui::red())
-                                        .child(format!("- {}", old_disp)),
-                                })
+                h_flex().justify_end().child(
+                    Button::new(("review-apply-item", index))
+                        .label("Apply")
+                        .primary()
+                        .small()
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.apply_pending(index, cx);
                         })),
-                    _ => div()
-                        .text_xs()
-                        .font_family("monospace")
-                        .text_color(cx.theme().muted_foreground)
-                        .child(edit.sql.clone()),
-                },
-            )
-            .child(
-                h_flex()
-                    .justify_end()
-                    .child(
-                        Button::new(("review-apply-item", index))
-                            .label("Apply")
-                            .primary()
-                            .small()
-                            .on_click(cx.listener(
-                                move |this, _: &ClickEvent, _, cx| {
-                                    this.apply_pending(index, cx);
-                                },
-                            )),
-                    ),
+                ),
             )
             .into_any_element()
     }

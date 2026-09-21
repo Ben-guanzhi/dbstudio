@@ -28,6 +28,7 @@ pub enum EditorEvent {
 impl EventEmitter<EditorEvent> for Editor {}
 
 pub struct Editor {
+    window_id: u64,
     pub input_state: Entity<EditorState>,
     provider: Rc<SqlCompletionProvider>,
     db_select: Entity<SelectState<Vec<SharedString>>>,
@@ -44,10 +45,11 @@ pub struct Editor {
 
 impl Editor {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(window, cx))
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, window, cx))
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let provider = Rc::new(SqlCompletionProvider::new());
 
         let provider_for_input = provider.clone();
@@ -69,20 +71,20 @@ impl Editor {
         let _subscriptions = vec![
             cx.observe_global::<AppState>(move |this, cx| {
                 let state = cx.global::<AppState>();
-                this.is_executing = state.is_executing();
-                this.active_connection = state.active_connection_name().cloned();
-                refresh_schema_completions(&this.provider, state.tables());
+                this.is_executing = state.is_executing_for(this.window_id);
+                this.active_connection = state.active_connection_name_for(this.window_id).cloned();
+                refresh_schema_completions(&this.provider, state.tables_for(this.window_id));
                 cx.notify();
             }),
             cx.observe_global_in::<AppState>(window, move |this, win, cx| {
                 this.sync_editor_buffer(win, cx);
                 let state = cx.global::<AppState>();
                 let names: Vec<SharedString> = state
-                    .databases()
+                    .databases_for(this.window_id)
                     .iter()
                     .map(|d| d.name.clone().into())
                     .collect();
-                let active_db = state.active_database().cloned();
+                let active_db = state.active_database_for(this.window_id).cloned();
                 this.db_select.update(cx, |select, cx| {
                     select.set_items(names, win, cx);
                     if let Some(db) = &active_db {
@@ -100,12 +102,13 @@ impl Editor {
         let state = cx.global::<AppState>();
         let vim_on = state.vim_mode;
         Self {
+            window_id,
             input_state,
             provider,
             db_select,
-            is_executing: state.is_executing(),
-            active_connection: state.active_connection_name().cloned(),
-            current_session_id: state.active_session,
+            is_executing: state.is_executing_for(window_id),
+            active_connection: state.active_connection_name_for(window_id).cloned(),
+            current_session_id: state.window_state(window_id).active_session,
             vim_on,
             vim: VimBuf::default(),
             _subscriptions,
@@ -118,7 +121,7 @@ impl Editor {
     /// active session changes we save the outgoing buffer and load the
     /// incoming one.
     fn sync_editor_buffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let new_id = cx.global::<AppState>().active_session;
+        let new_id = cx.global::<AppState>().window_state(self.window_id).active_session;
         if new_id == self.current_session_id {
             return;
         }
@@ -155,7 +158,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if let SelectEvent::Confirm(Some(db)) = event {
-            select_database(db.as_ref(), cx);
+            select_database(db.as_ref(), self.window_id, cx);
         }
     }
 
@@ -329,11 +332,11 @@ impl Editor {
     }
 
     fn on_disconnect(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        crate::state::disconnect(cx);
+        crate::state::disconnect(self.window_id, cx);
     }
 
     /// Ask the configured LLM to continue the SQL at the cursor and insert the
-    /// suggested text inline (the plan's 4g "光标处 Tab 触发" inline completion).
+    /// suggested text inline (the plan's 4g "鍏夋爣澶?Tab 瑙﹀彂" inline completion).
     pub fn ai_complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let config = cx.global::<AppState>().ai_config.clone();
         let provider = provider_for(&config);
@@ -344,7 +347,7 @@ impl Editor {
         let state = self.input_state.read(cx);
         let full_text = state.value().to_string();
         let cursor = state.selected_range().start.min(full_text.len());
-        let schemas = cx.global::<AppState>().table_schemas();
+        let schemas = cx.global::<AppState>().table_schemas_for(self.window_id);
         let mut schema_ctx = String::new();
         for (_key, s) in schemas.iter().take(10) {
             let columns: Vec<String> = s
@@ -497,7 +500,7 @@ impl Render for Editor {
                 if !sql.trim().is_empty() {
                     // For now, use a default name; a dialog could be added later
                     let name = format!("Query {}", chrono::Local::now().format("%H:%M:%S"));
-                    crate::state::save_favorite(&name, &sql, cx);
+                    crate::state::save_favorite(&name, &sql, this.window_id, cx);
                 }
             }));
 
@@ -506,7 +509,7 @@ impl Render for Editor {
             .icon(Icon::empty().path("icons/sparkles.svg"))
             .small()
             .ghost()
-            .tooltip("AI 补全：用已配置模型续写光标处 SQL")
+            .tooltip("AI 琛ュ叏锛氱敤宸查厤缃ā鍨嬬画鍐欏厜鏍囧 SQL")
             .disabled(!has_connection || !ai_configured)
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.ai_complete(window, cx);
@@ -518,9 +521,9 @@ impl Render for Editor {
             .ghost()
             .toggled(self.vim_on)
             .tooltip(if self.vim_on {
-                "Vim 模式：ON — Esc 回到 Normal，i/a/o 进入插入"
+                "Vim 妯″紡锛歄N 鈥?Esc 鍥炲埌 Normal锛宨/a/o 杩涘叆鎻掑叆"
             } else {
-                "Vim 模式：OFF"
+                "Vim 妯″紡锛歄FF"
             })
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.toggle_vim(window, cx);
@@ -650,7 +653,7 @@ fn refresh_schema_completions(provider: &SqlCompletionProvider, tables: &[dbstud
             let detail = table
                 .schema
                 .as_deref()
-                .map(|schema| format!("{} · {}", schema, table.table_type.display_name()))
+                .map(|schema| format!("{} 路 {}", schema, table.table_type.display_name()))
                 .unwrap_or_else(|| table.table_type.display_name().to_string());
             CompletionItem {
                 label: table.name.clone(),

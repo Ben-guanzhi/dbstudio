@@ -1,22 +1,17 @@
-﻿use std::cell::RefCell;
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dbstudio_core::result::{CellType, ExecResult, ErrorResult, QueryResult, ResultCell, SqlResult};
+use dbstudio_core::result::{
+    CellType, ErrorResult, ExecResult, QueryResult, ResultCell, SqlResult,
+};
 use dbstudio_core::schema::{ColumnInfo, TableSchema};
 use dbstudio_db::utils::quote_string_literal;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Disableable as _,
-    Icon,
-    IconName,
-    IndexPath,
-    Sizable as _,
-    StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -24,7 +19,8 @@ use gpui_component::{
     scroll::ScrollableElement as _,
     select::{Select, SelectEvent, SelectItem, SelectState},
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
-    v_flex,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _,
+    StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -34,8 +30,8 @@ mod export;
 mod table_delegate;
 mod views;
 
-pub use table_delegate::{ColumnFilter, FilterOp, cell_matches_filter, like_match, operators_for};
 use table_delegate::ResultsTableDelegate;
+pub use table_delegate::{cell_matches_filter, like_match, operators_for, ColumnFilter, FilterOp};
 
 #[derive(Clone, Copy, PartialEq)]
 enum ResultsTab {
@@ -105,10 +101,14 @@ impl SelectItem for FilterOpOption {
 }
 
 fn filter_op_options_for(kind: CellType) -> Vec<FilterOpOption> {
-    operators_for(kind).iter().map(|op| FilterOpOption(*op)).collect()
+    operators_for(kind)
+        .iter()
+        .map(|op| FilterOpOption(*op))
+        .collect()
 }
 
 pub struct ResultsPanel {
+    window_id: u64,
     result: Option<Arc<SqlResult>>,
     table: Entity<TableState<ResultsTableDelegate>>,
     selected_schema: Option<TableSchema>,
@@ -149,12 +149,17 @@ pub struct ResultsPanel {
 
 impl ResultsPanel {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        let panel = cx.new(|cx| Self::new(window, cx));
-        panel.read(cx).panel_handle.borrow_mut().replace(panel.clone());
+        let window_id = window.window_handle().window_id().as_u64();
+        let panel = cx.new(|cx| Self::new(window_id, window, cx));
+        panel
+            .read(cx)
+            .panel_handle
+            .borrow_mut()
+            .replace(panel.clone());
         panel
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let selected_row_cell = Rc::new(RefCell::new(None));
         let selected_cell = Rc::new(RefCell::new(None));
         let last_click = Rc::new(RefCell::new(None));
@@ -173,10 +178,7 @@ impl ResultsPanel {
             .sortable(true)
         });
 
-        let editing_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Edit value...")
-        });
+        let editing_input = cx.new(|cx| InputState::new(window, cx).placeholder("Edit value..."));
 
         let filter_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -190,105 +192,112 @@ impl ResultsPanel {
                 .clean_on_escape()
         });
 
-        let filter_col_select = cx.new(|cx| {
-            SelectState::new(Vec::<FilterColOption>::new(), None, window, cx)
-        });
+        let filter_col_select =
+            cx.new(|cx| SelectState::new(Vec::<FilterColOption>::new(), None, window, cx));
         cx.subscribe_in(&filter_col_select, window, Self::on_filter_col_change)
             .detach();
 
-        let filter_op_select = cx.new(|cx| {
-            SelectState::new(Vec::<FilterOpOption>::new(), None, window, cx)
-        });
+        let filter_op_select =
+            cx.new(|cx| SelectState::new(Vec::<FilterOpOption>::new(), None, window, cx));
         cx.subscribe_in(&filter_op_select, window, Self::on_filter_op_change)
             .detach();
 
         let editing_input_sub = editing_input.clone();
-        cx.subscribe_in(&editing_input_sub, window, |this, _emitter, event: &gpui_component::input::InputEvent, win, cx| {
-            match event {
+        cx.subscribe_in(
+            &editing_input_sub,
+            window,
+            |this, _emitter, event: &gpui_component::input::InputEvent, win, cx| match event {
                 gpui_component::input::InputEvent::PressEnter { .. }
                 | gpui_component::input::InputEvent::Blur => this.commit_cell_edit(win, cx),
                 _ => {}
-            }
-        }).detach();
+            },
+        )
+        .detach();
 
         let filter_input_sub = filter_input.clone();
-        let _subscriptions = vec![
-            cx.observe_global::<AppState>(move |this, cx| {
-                let state = cx.global::<AppState>();
+        let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
+            let state = cx.global::<AppState>();
 
-                let state_result_ptr = state.last_result().map(|r| Arc::as_ptr(r));
-                let current_result_ptr = this.result.as_ref().map(|r| Arc::as_ptr(r));
-                let result_changed = state_result_ptr != current_result_ptr;
+            let state_result_ptr = state
+                .last_result_for(this.window_id)
+                .map(|r| Arc::as_ptr(r));
+            let current_result_ptr = this.result.as_ref().map(|r| Arc::as_ptr(r));
+            let result_changed = state_result_ptr != current_result_ptr;
 
-                let pending_schema = if let Some(ref t) = this.pending_table {
-                    state.table_schemas().get(t).cloned()
-                } else {
-                    None
+            let pending_schema = if let Some(ref t) = this.pending_table {
+                state.table_schemas_for(this.window_id).get(t).cloned()
+            } else {
+                None
+            };
+
+            if result_changed {
+                let prev_columns = match this.result.as_deref() {
+                    Some(SqlResult::Query(q)) => Some(q.columns.clone()),
+                    _ => None,
                 };
+                this.result = state.last_result_for(this.window_id).cloned();
+                // Keep the text/column filters when re-running or paging
+                // over the same result shape; clear them otherwise.
+                let shape_same = matches!(
+                    (&prev_columns, this.result.as_deref()),
+                    (Some(a), Some(SqlResult::Query(b))) if a == &b.columns
+                );
+                if !shape_same {
+                    this.filter_text.clear();
+                    this.column_filters.clear();
+                    this.show_filter_composer = false;
+                }
 
-                if result_changed {
-                    let prev_columns = match this.result.as_deref() {
-                        Some(SqlResult::Query(q)) => Some(q.columns.clone()),
-                        _ => None,
-                    };
-                    this.result = state.last_result().cloned();
-                    // Keep the text/column filters when re-running or paging
-                    // over the same result shape; clear them otherwise.
-                    let shape_same = matches!(
-                        (&prev_columns, this.result.as_deref()),
-                        (Some(a), Some(SqlResult::Query(b))) if a == &b.columns
-                    );
-                    if !shape_same {
+                match this.result.as_deref() {
+                    Some(SqlResult::Query(query)) => {
+                        this.active_tab = ResultsTab::Data;
+                        let query = query.clone();
+                        let filter_text = this.filter_text.clone();
+                        let column_filters = this.column_filters.clone();
+                        this.table.update(cx, |table, cx| {
+                            table.delegate_mut().update(&query);
+                            table.delegate_mut().set_filter(&filter_text);
+                            table.delegate_mut().set_column_filters(&column_filters);
+                            table.refresh(cx);
+                        });
+                    }
+                    _ => {
                         this.filter_text.clear();
                         this.column_filters.clear();
                         this.show_filter_composer = false;
-                    }
-
-                    match this.result.as_deref() {
-                        Some(SqlResult::Query(query)) => {
-                            this.active_tab = ResultsTab::Data;
-                            let query = query.clone();
-                            let filter_text = this.filter_text.clone();
-                            let column_filters = this.column_filters.clone();
-                            this.table.update(cx, |table, cx| {
-                                table.delegate_mut().update(&query);
-                                table.delegate_mut().set_filter(&filter_text);
-                                table.delegate_mut().set_column_filters(&column_filters);
-                                table.refresh(cx);
-                            });
-                        }
-                        _ => {
-                            this.filter_text.clear();
-                            this.column_filters.clear();
-                            this.show_filter_composer = false;
-                            this.table.update(cx, |table, cx| {
-                                table.delegate_mut().update(&QueryResult::empty(""));
-                                table.delegate_mut().clear_filters();
-                                table.refresh(cx);
-                            });
-                        }
+                        this.table.update(cx, |table, cx| {
+                            table.delegate_mut().update(&QueryResult::empty(""));
+                            table.delegate_mut().clear_filters();
+                            table.refresh(cx);
+                        });
                     }
                 }
+            }
 
-                let got_schema = pending_schema.is_some();
-                if let Some(schema) = pending_schema {
-                    this.selected_schema = Some(schema);
-                    this.pending_table = None;
-                }
+            let got_schema = pending_schema.is_some();
+            if let Some(schema) = pending_schema {
+                this.selected_schema = Some(schema);
+                this.pending_table = None;
+            }
 
-                if result_changed || got_schema {
-                    cx.notify();
-                }
-            }),
-        ];
+            if result_changed || got_schema {
+                cx.notify();
+            }
+        })];
 
-        cx.subscribe_in(&filter_input_sub, window, |this, _, _event: &gpui_component::input::InputEvent, _win, cx| {
-            this.filter_text = this.filter_input.read(cx).value().to_string();
-            this.apply_filter(cx);
-        }).detach();
+        cx.subscribe_in(
+            &filter_input_sub,
+            window,
+            |this, _, _event: &gpui_component::input::InputEvent, _win, cx| {
+                this.filter_text = this.filter_input.read(cx).value().to_string();
+                this.apply_filter(cx);
+            },
+        )
+        .detach();
 
         Self {
-            result: cx.global::<AppState>().last_result().cloned(),
+            window_id,
+            result: cx.global::<AppState>().last_result_for(window_id).cloned(),
             table,
             selected_schema: None,
             pending_table: None,
@@ -457,7 +466,12 @@ impl ResultsPanel {
         cx.notify();
     }
 
-    pub fn select_table(&mut self, table_name: String, schema: Option<TableSchema>, cx: &mut Context<Self>) {
+    pub fn select_table(
+        &mut self,
+        table_name: String,
+        schema: Option<TableSchema>,
+        cx: &mut Context<Self>,
+    ) {
         self.current_table = Some(table_name.clone());
         self.pending_table = Some(table_name);
         self.selected_schema = schema;
@@ -468,7 +482,7 @@ impl ResultsPanel {
         self.show_filter_composer = false;
         *self.selected_row_cell.borrow_mut() = None;
         cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.active_session_mut() {
+            if let Some(s) = state.active_session_mut_for(self.window_id) {
                 s.last_result = None;
             }
         });
@@ -524,7 +538,11 @@ impl ResultsPanel {
         let original = self.editing_original.take();
         let old = match &original {
             Some((value, is_null)) => {
-                if *is_null { None } else { Some(value.clone()) }
+                if *is_null {
+                    None
+                } else {
+                    Some(value.clone())
+                }
             }
             None => None,
         };
@@ -537,7 +555,10 @@ impl ResultsPanel {
 
         let table = match &self.current_table {
             Some(t) => t.clone(),
-            None => { cx.notify(); return; }
+            None => {
+                cx.notify();
+                return;
+            }
         };
 
         let table_entity = self.table.clone();
@@ -572,8 +593,11 @@ impl ResultsPanel {
         let conditions: Vec<String> = pk_columns
             .iter()
             .filter_map(|pk| {
-                let col_q = crate::state::quote_ident(&pk.name, cx);
-                let cell = table_entity.read(cx).delegate().cell_named(display_row, &pk.name)?;
+                let col_q = crate::state::quote_ident(&pk.name, self.window_id, cx);
+                let cell = table_entity
+                    .read(cx)
+                    .delegate()
+                    .cell_named(display_row, &pk.name)?;
                 if cell.is_null {
                     Some(format!("{} IS NULL", col_q))
                 } else {
@@ -586,13 +610,16 @@ impl ResultsPanel {
             return;
         }
 
-        let table_q = crate::state::quote_ident(&table, cx);
-        let col_q = crate::state::quote_ident(&col_name, cx);
+        let table_q = crate::state::quote_ident(&table, self.window_id, cx);
+        let col_q = crate::state::quote_ident(&col_name, self.window_id, cx);
         let where_clause = conditions.join(" AND ");
         let sets = format!("{} = {}", col_q, actions::quoted_or_null(new.as_deref()));
         let sql = format!("UPDATE {} SET {} WHERE {};", table_q, sets, where_clause);
         let inverse_set = format!("{} = {}", col_q, actions::quoted_or_null(old.as_deref()));
-        let inverse_sql = format!("UPDATE {} SET {} WHERE {};", table_q, inverse_set, where_clause);
+        let inverse_sql = format!(
+            "UPDATE {} SET {} WHERE {};",
+            table_q, inverse_set, where_clause
+        );
 
         let diff = Some(crate::state::guard::PendingDiff {
             table: table.clone(),
@@ -638,7 +665,9 @@ fn empty_hint(message: &'static str, cx: &Context<ResultsPanel>) -> AnyElement {
 
 /// Small muted badge/label used across the schema view.
 fn muted_label(text: impl Into<SharedString>, cx: &Context<ResultsPanel>) -> Label {
-    Label::new(text).text_xs().text_color(cx.theme().muted_foreground)
+    Label::new(text)
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
 }
 
 /// Section heading inside the schema view.
@@ -653,8 +682,19 @@ fn render_error(cx: &Context<ResultsPanel>, err: &ErrorResult) -> impl IntoEleme
     v_flex()
         .gap_1()
         .p_4()
-        .child(div().text_base().font_bold().text_color(gpui::red()).child("Query Error"))
-        .child(div().text_sm().text_color(cx.theme().foreground).child(err.message.clone()))
+        .child(
+            div()
+                .text_base()
+                .font_bold()
+                .text_color(gpui::red())
+                .child("Query Error"),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .child(err.message.clone()),
+        )
         .child(
             div()
                 .text_xs()
@@ -678,12 +718,17 @@ fn render_modified(cx: &Context<ResultsPanel>, exec: &ExecResult) -> impl IntoEl
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(format!("{} rows affected in {} ms", exec.rows_affected, exec.execution_time_ms)),
+                .child(format!(
+                    "{} rows affected in {} ms",
+                    exec.rows_affected, exec.execution_time_ms
+                )),
         )
 }
 
 fn export_path(ext: &str) -> std::path::PathBuf {
-    let dir = dirs::desktop_dir().or_else(dirs::document_dir).unwrap_or_default();
+    let dir = dirs::desktop_dir()
+        .or_else(dirs::document_dir)
+        .unwrap_or_default();
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
     dir.join(format!("export_{}.{}", ts, ext))
 }

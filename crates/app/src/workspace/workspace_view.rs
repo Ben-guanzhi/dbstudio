@@ -1,8 +1,9 @@
-﻿use super::*;
+use super::*;
 impl Workspace {
     pub(super) fn render_workspace(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let show_tables = cx.global::<AppState>().show_tables;
-        let show_history = cx.global::<AppState>().show_history;
+        let ws = cx.global::<AppState>().window_state(self.window_id);
+        let show_tables = ws.show_tables;
+        let show_history = ws.show_history;
         let show_ai = self.show_ai_panel;
         let sidebar = div()
             .id("left-pane")
@@ -68,8 +69,16 @@ impl Workspace {
             .when(show_history, |this| this.child(history_panel))
             .when(show_ai, |this| this.child(ai_panel));
 
-        let has_pending = cx.global::<AppState>().pending_dangerous_query.is_some();
-        let pending_display = if let Some((ref sql, ref kind)) = cx.global::<AppState>().pending_dangerous_query {
+        let has_pending = cx
+            .global::<AppState>()
+            .window_state(self.window_id)
+            .pending_dangerous_query
+            .is_some();
+        let pending_display = if let Some((ref sql, ref kind)) = cx
+            .global::<AppState>()
+            .window_state(self.window_id)
+            .pending_dangerous_query
+        {
             Some((sql.clone(), kind.label().to_string()))
         } else {
             None
@@ -99,28 +108,35 @@ impl Workspace {
                                     .text_color(gpui::red()),
                             )
                             .child(
-                                v_flex().flex_1().overflow_hidden().child(
-                                    div()
-                                        .text_xs()
-                                        .font_bold()
-                                        .text_color(gpui::red())
-                                        .child(format!("Confirm {} query", kind_label)),
-                                ).child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(sql),
-                                ),
+                                v_flex()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_bold()
+                                            .text_color(gpui::red())
+                                            .child(format!("Confirm {} query", kind_label)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(sql),
+                                    ),
                             )
                             .child(
                                 Button::new("confirm-execute")
                                     .label("Execute")
                                     .danger()
                                     .small()
-                                    .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
-                                        dbstudio_ui::state::confirm_dangerous_query(cx);
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                        dbstudio_ui::state::confirm_dangerous_query(
+                                            this.window_id,
+                                            cx,
+                                        );
                                     })),
                             )
                             .child(
@@ -128,8 +144,11 @@ impl Workspace {
                                     .label("Cancel")
                                     .ghost()
                                     .small()
-                                    .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
-                                        dbstudio_ui::state::reject_dangerous_query(cx);
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                                        dbstudio_ui::state::reject_dangerous_query(
+                                            this.window_id,
+                                            cx,
+                                        );
                                     })),
                             ),
                     )

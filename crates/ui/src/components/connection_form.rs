@@ -175,7 +175,7 @@ impl PluginOption {
         for info in dbstudio_db::plugin_manager().list_plugins() {
             options.push(PluginOption {
                 name: info.name.clone(),
-                title: format!("{} v{} · {}", info.name, info.version, info.db_type),
+                title: format!("{} v{} 路 {}", info.name, info.version, info.db_type),
             });
         }
         options
@@ -202,6 +202,7 @@ pub enum ConnectionFormEvent {
 impl EventEmitter<ConnectionFormEvent> for ConnectionForm {}
 
 pub struct ConnectionForm {
+    window_id: u64,
     name: Entity<InputState>,
     host: Entity<InputState>,
     username: Entity<InputState>,
@@ -245,7 +246,8 @@ impl ConnectionForm {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        cx.new(|cx| Self::new(connection, window, cx))
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, connection, window, cx))
     }
 
     /// Create a single-line text input with the given placeholder.
@@ -269,6 +271,7 @@ impl ConnectionForm {
     }
 
     fn new(
+        window_id: u64,
         connection: Option<dbstudio_storage::types::ConnectionInfo>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -373,6 +376,7 @@ impl ConnectionForm {
         let tags = Self::text_input(window, cx, "comma-separated tags", false);
 
         let mut form = Self {
+            window_id,
             name,
             host,
             username,
@@ -701,7 +705,14 @@ impl ConnectionForm {
         let ssh_password = self.ssh_password.read(cx).value().to_string();
         let ssh_key_passphrase = self.ssh_key_passphrase.read(cx).value().to_string();
         if let Some(config) = self.get_config(window, cx) {
-            connect_config(&config, &password, &ssh_password, &ssh_key_passphrase, cx);
+            connect_config(
+                &config,
+                &password,
+                &ssh_password,
+                &ssh_key_passphrase,
+                self.window_id,
+                cx,
+            );
             cx.emit(ConnectionFormEvent::Saved);
         }
     }

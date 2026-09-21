@@ -104,12 +104,12 @@ pub fn like_match(value: &str, pattern: &str) -> bool {
 /// something instead of hiding every row.
 fn filter_num(cell: &ResultCell, expected: &str, cmp: impl Fn(f64, f64) -> bool) -> bool {
     let Some(exp) = expected.trim().parse::<f64>().ok() else {
-        return cell
-            .value
-            .to_lowercase()
-            .contains(&expected.to_lowercase());
+        return cell.value.to_lowercase().contains(&expected.to_lowercase());
     };
-    match cell.sort_value.or_else(|| cell.value.trim().parse::<f64>().ok()) {
+    match cell
+        .sort_value
+        .or_else(|| cell.value.trim().parse::<f64>().ok())
+    {
         Some(actual) => cmp(actual, exp),
         None => false,
     }
@@ -118,13 +118,31 @@ fn filter_num(cell: &ResultCell, expected: &str, cmp: impl Fn(f64, f64) -> bool)
 /// Default operator set offered per logical cell type.
 pub fn operators_for(kind: CellType) -> &'static [FilterOp] {
     match kind {
-        CellType::Integer | CellType::Float | CellType::Decimal | CellType::Boolean => {
-            &[FilterOp::Equals, FilterOp::NotEquals, FilterOp::GreaterThan, FilterOp::LessThan, FilterOp::IsEmpty, FilterOp::NotEmpty]
-        }
-        CellType::Date | CellType::Time | CellType::DateTime => {
-            &[FilterOp::GreaterThan, FilterOp::LessThan, FilterOp::Equals, FilterOp::NotEquals, FilterOp::IsEmpty, FilterOp::NotEmpty]
-        }
-        _ => &[FilterOp::Contains, FilterOp::Equals, FilterOp::NotEquals, FilterOp::StartsWith, FilterOp::Like, FilterOp::IsEmpty, FilterOp::NotEmpty],
+        CellType::Integer | CellType::Float | CellType::Decimal | CellType::Boolean => &[
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::GreaterThan,
+            FilterOp::LessThan,
+            FilterOp::IsEmpty,
+            FilterOp::NotEmpty,
+        ],
+        CellType::Date | CellType::Time | CellType::DateTime => &[
+            FilterOp::GreaterThan,
+            FilterOp::LessThan,
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::IsEmpty,
+            FilterOp::NotEmpty,
+        ],
+        _ => &[
+            FilterOp::Contains,
+            FilterOp::Equals,
+            FilterOp::NotEquals,
+            FilterOp::StartsWith,
+            FilterOp::Like,
+            FilterOp::IsEmpty,
+            FilterOp::NotEmpty,
+        ],
     }
 }
 
@@ -184,7 +202,9 @@ impl ResultsTableDelegate {
                 .max()
                 .unwrap_or(0);
             let width = (header_len.max(cell_len) as f32 * 7.5 + 24.0).clamp(80.0, 3000.0);
-            Column::new(&col.name, &col.name).sortable().width(px(width))
+            Column::new(&col.name, &col.name)
+                .sortable()
+                .width(px(width))
         }));
         self.columns = cols;
         self.rebuild_filtered_order();
@@ -281,13 +301,21 @@ impl ResultsTableDelegate {
         }
     }
 
-    fn render_edit_input(&mut self, col_ix: usize, cx: &mut Context<TableState<Self>>) -> AnyElement {
+    fn render_edit_input(
+        &mut self,
+        col_ix: usize,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
         let input = self
             .panel_handle
             .borrow()
             .as_ref()
             .map(|panel| panel.read(cx).editing_input.clone());
-        let width = self.columns.get(col_ix).map(|c| c.width).unwrap_or(px(120.0));
+        let width = self
+            .columns
+            .get(col_ix)
+            .map(|c| c.width)
+            .unwrap_or(px(120.0));
         let panel_handle = self.panel_handle.clone();
         match input {
             Some(input) => div()

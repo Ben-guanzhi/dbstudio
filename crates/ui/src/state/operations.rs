@@ -1,7 +1,7 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use dbstudio_core::ai::LlmConfig;
-use dbstudio_core::models::{DatabaseType, ConnectionConfig};
+use dbstudio_core::models::{ConnectionConfig, DatabaseType};
 use dbstudio_core::result::{QueryResult, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::{DatabaseInfo, TableSchema};
 use dbstudio_db::utils::{quote_backtick, quote_bracket, quote_double_quote};
@@ -12,31 +12,32 @@ use gpui::*;
 use super::guard::{classify_sql, requires_confirmation, WriteKind};
 use super::{AppState, ConnectionSession};
 
-/// Create a new empty session and make it the active one. Returns its id.
-pub fn new_session(name: &str, cx: &mut App) -> u64 {
+/// Create a new empty session and make it the active one in `window_id`.
+/// Returns its id.
+pub fn new_session(name: &str, window_id: u64, cx: &mut App) -> u64 {
     let mut id = 0u64;
     cx.update_global::<AppState, _>(|state, _cx| {
         id = state.next_session_id;
         state.next_session_id += 1;
         state.sessions.insert(0, ConnectionSession::new(id, name));
-        state.active_session = Some(id);
+        state.set_active_session(window_id, Some(id));
     });
     id
 }
 
-/// Switch the active session to `id`, restoring its editor buffer.
-pub fn switch_session(id: u64, cx: &mut App) {
+/// Switch the active session in `window_id` to `id`, restoring its editor buffer.
+pub fn switch_session(id: u64, window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
         if state.session(id).is_some() {
-            state.active_session = Some(id);
+            state.set_active_session(window_id, Some(id));
         }
     });
 }
 
 /// Close a session, dropping its connection (and releasing its SSH tunnel).
-/// Removes it from the tab list and activates a neighbouring tab if any.
+/// Removes it from the tab list; every window that pointed at it gets a
+/// neighbouring tab instead (or none if the catalog is now empty).
 pub fn close_session(id: u64, cx: &mut App) {
-    let mut next_active = None;
     cx.update_global::<AppState, _>(|state, _cx| {
         let Some(pos) = state.sessions.iter().position(|s| s.id == id) else {
             return;
@@ -44,42 +45,48 @@ pub fn close_session(id: u64, cx: &mut App) {
         state.sessions.remove(pos);
 
         if state.sessions.is_empty() {
-            state.active_session = None;
+            for win in state.windows.values_mut() {
+                win.active_session = None;
+            }
             state.status_message = "Disconnected".to_string();
             return;
         }
 
         // Activate the tab that took the removed one's place, or the last one.
         let new_pos = pos.min(state.sessions.len() - 1);
-        next_active = Some(state.sessions[new_pos].id);
-        state.active_session = next_active;
+        let next = state.sessions[new_pos].id;
+        for win in state.windows.values_mut() {
+            if win.active_session == Some(id) {
+                win.active_session = Some(next);
+            }
+        }
         state.status_message = String::new();
     });
 }
 
-/// Sync the editor buffer for the active session (called whenever the editor changes).
-pub fn set_active_editor_text(text: &str, cx: &mut App) {
-    update_active_session(cx, |session, _cx| {
+/// Sync the editor buffer for the active session of `window_id` (called whenever the editor changes).
+pub fn set_active_editor_text(text: &str, window_id: u64, cx: &mut App) {
+    update_active_session(window_id, cx, |session, _cx| {
         session.editor_text = text.to_string();
     });
 }
 
-/// Run `f` against the active session (if any), then notifies observers.
-fn update_active_session<F>(cx: &mut App, f: F)
+/// Run `f` against the active session of `window_id` (if any), then notifies observers.
+fn update_active_session<F>(window_id: u64, cx: &mut App, f: F)
 where
     F: FnOnce(&mut ConnectionSession, &mut App),
 {
     cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(session) = state.active_session_mut() {
+        if let Some(session) = state.active_session_mut_for(window_id) {
             f(session, _cx);
         }
     });
 }
 
-/// Initiate a connection asynchronously. Updates `AppState` along the way.
-pub fn connect(conn_info: &ConnectionInfo, cx: &mut App) {
+/// Initiate a connection asynchronously in `window_id`. Updates `AppState` along the way.
+pub fn connect(conn_info: &ConnectionInfo, window_id: u64, cx: &mut App) {
     let info = conn_info.clone();
-    let id = new_session(&info.name, cx);
+    let id = new_session(&info.name, window_id, cx);
     cx.update_global::<AppState, _>(|state, _cx| {
         if let Some(s) = state.session_mut(id) {
             s.connection_state = ConnectionStatus::Connecting;
@@ -87,20 +94,21 @@ pub fn connect(conn_info: &ConnectionInfo, cx: &mut App) {
         state.status_message = format!("Connecting to {}...", info.name);
     });
 
-    cx.spawn(async move |cx| connect_async(id, info, cx).await).detach();
+    cx.spawn(async move |cx| connect_async(id, info, cx).await)
+        .detach();
 }
 
-/// Disconnect the active session (keeps the tab open, ready to reconnect).
-pub fn disconnect(cx: &mut App) {
+/// Disconnect the active session of `window_id` (keeps the tab open, ready to reconnect).
+pub fn disconnect(window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(s) = state.active_session_mut() {
+        if let Some(s) = state.active_session_mut_for(window_id) {
             s.connection_state = ConnectionStatus::Disconnecting;
         }
     });
 
     cx.spawn(async move |cx| {
         cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.active_session_mut() {
+            if let Some(s) = state.active_session_mut_for(window_id) {
                 s.connection = None;
                 s.connection_state = ConnectionStatus::Disconnected;
                 s.active_database = None;
@@ -116,9 +124,13 @@ pub fn disconnect(cx: &mut App) {
     .detach();
 }
 
-/// Run a SQL query / statement against the active session.
-pub fn execute_query(sql: String, cx: &mut App) {
-    let conn = match cx.global::<AppState>().active_connection().cloned() {
+/// Run a SQL query / statement against the active session of `window_id`.
+pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
         Some(conn) => conn,
         None => {
             AppState::update_status(cx, "Not connected".to_string());
@@ -127,29 +139,38 @@ pub fn execute_query(sql: String, cx: &mut App) {
     };
     let conn_id = cx
         .global::<AppState>()
-        .active_session()
-        .and_then(|s| s.connection_id.clone())
+        .active_connection_id_for(window_id)
+        .cloned()
         .unwrap_or_default();
 
     // Safe-mode guard: classify the SQL and check the session's environment.
     let kind = classify_sql(&sql);
     let env = cx
         .global::<AppState>()
-        .active_session()
+        .active_session_for(window_id)
         .map(|s| s.environment)
         .unwrap_or_default();
     if requires_confirmation(kind.clone(), env, cx.global::<AppState>().safe_mode) {
         cx.update_global::<AppState, _>(|state, _cx| {
-            state.pending_dangerous_query = Some((sql, kind.unwrap_or(WriteKind::OtherDdl)));
+            state.window_state_mut(window_id).pending_dangerous_query =
+                Some((sql, kind.unwrap_or(WriteKind::OtherDdl)));
             state.status_message = "Confirm this query before execution".to_string();
         });
         return;
     }
 
+    // Resolve the session once; completions apply back to the session by id so a
+    // mid-flight connection switch in this (or another) window stays consistent.
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
     cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(s) = state.active_session_mut() {
-            s.is_executing = true;
-            s.last_result = None;
+        if let Some(sid) = session_id {
+            if let Some(s) = state.session_mut(sid) {
+                s.is_executing = true;
+                s.last_result = None;
+            }
         }
         state.status_message = "Executing...".to_string();
     });
@@ -162,8 +183,10 @@ pub fn execute_query(sql: String, cx: &mut App) {
 
         let sql_clone = sql.clone();
         let row_count_for_record = cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.active_session_mut() {
-                s.is_executing = false;
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.is_executing = false;
+                }
             }
             match &result {
                 Ok(result) => {
@@ -172,10 +195,12 @@ pub fn execute_query(sql: String, cx: &mut App) {
                         SqlResult::Modified(m) => (m.execution_time_ms, None, false),
                         SqlResult::Error(_) => (0, None, true),
                     };
-                    if let Some(s) = state.active_session_mut() {
-                        s.last_result = Some(Arc::new(result.clone()));
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(result.clone()));
+                        }
                     }
-                    record_history(state, &sql_clone, exec_ms, rc, err);
+                    record_history(state, session_id, &sql_clone, exec_ms, rc, err);
                     state.status_message = if err {
                         "Query failed".to_string()
                     } else {
@@ -187,17 +212,19 @@ pub fn execute_query(sql: String, cx: &mut App) {
                     rc
                 }
                 Err(e) => {
-                    record_history(state, &sql_clone, 0, None, true);
+                    record_history(state, session_id, &sql_clone, 0, None, true);
                     is_error = true;
                     state.status_message = format!("Query failed: {}", e);
-                    if let Some(s) = state.active_session_mut() {
-                        s.last_result = Some(Arc::new(SqlResult::Error(
-                            dbstudio_core::result::ErrorResult {
-                                message: e.to_string(),
-                                sql: sql_clone.clone(),
-                                execution_time_ms: 0,
-                            },
-                        )));
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(SqlResult::Error(
+                                dbstudio_core::result::ErrorResult {
+                                    message: e.to_string(),
+                                    sql: sql_clone.clone(),
+                                    execution_time_ms: 0,
+                                },
+                            )));
+                        }
                     }
                     None
                 }
@@ -219,21 +246,25 @@ pub fn execute_query(sql: String, cx: &mut App) {
     .detach();
 }
 
-/// Confirm and execute a previously-intercepted dangerous query.
-pub fn confirm_dangerous_query(cx: &mut App) {
-    let pending = cx
-        .update_global::<AppState, _>(|state, _cx| state.pending_dangerous_query.take());
+/// Confirm and execute a previously-intercepted dangerous query in `window_id`.
+pub fn confirm_dangerous_query(window_id: u64, cx: &mut App) {
+    let pending = cx.update_global::<AppState, _>(|state, _cx| {
+        state
+            .window_state_mut(window_id)
+            .pending_dangerous_query
+            .take()
+    });
     if let Some((sql, _kind)) = pending {
         // Re-execute: this time the guard won't intercept because we
         // bypass it by calling execute_raw_query.
-        execute_raw_query(sql, cx);
+        execute_raw_query(sql, window_id, cx);
     }
 }
 
-/// Dismiss the pending dangerous query without executing it.
-pub fn reject_dangerous_query(cx: &mut App) {
+/// Dismiss the pending dangerous query in `window_id` without executing it.
+pub fn reject_dangerous_query(window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
-        state.pending_dangerous_query = None;
+        state.window_state_mut(window_id).pending_dangerous_query = None;
         state.status_message = "Query cancelled".to_string();
     });
 }
@@ -245,7 +276,11 @@ pub fn toggle_safe_mode(cx: &mut App) {
         state.safe_mode = !state.safe_mode;
         state.status_message = format!(
             "Safe Mode {}",
-            if state.safe_mode { "enabled" } else { "disabled" }
+            if state.safe_mode {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
         state.safe_mode
     });
@@ -268,19 +303,12 @@ pub fn toggle_safe_mode(cx: &mut App) {
 pub fn save_vim_mode(on: bool, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
         state.vim_mode = on;
-        state.status_message = format!(
-            "Vim mode {}",
-            if on { "enabled" } else { "disabled" }
-        );
+        state.status_message = format!("Vim mode {}", if on { "enabled" } else { "disabled" });
     });
     cx.spawn(async move |_cx| {
         if let Ok(store) = AppStore::singleton().await {
-            let _ = dbstudio_storage::settings::set_setting_bool(
-                store.pool(),
-                "app.vim_mode",
-                on,
-            )
-            .await;
+            let _ = dbstudio_storage::settings::set_setting_bool(store.pool(), "app.vim_mode", on)
+                .await;
         }
     })
     .detach();
@@ -308,8 +336,12 @@ pub fn save_ai_config(config: LlmConfig, cx: &mut App) {
 
 /// Execute a SQL query without the safe-mode guard. Used internally for
 /// confirmed dangerous queries and programmatic execution (data edits).
-pub fn execute_raw_query(sql: String, cx: &mut App) {
-    let conn = match cx.global::<AppState>().active_connection().cloned() {
+pub fn execute_raw_query(sql: String, window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
         Some(conn) => conn,
         None => {
             AppState::update_status(cx, "Not connected".to_string());
@@ -318,14 +350,20 @@ pub fn execute_raw_query(sql: String, cx: &mut App) {
     };
     let conn_id = cx
         .global::<AppState>()
-        .active_session()
-        .and_then(|s| s.connection_id.clone())
+        .active_connection_id_for(window_id)
+        .cloned()
         .unwrap_or_default();
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
 
     cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(s) = state.active_session_mut() {
-            s.is_executing = true;
-            s.last_result = None;
+        if let Some(sid) = session_id {
+            if let Some(s) = state.session_mut(sid) {
+                s.is_executing = true;
+                s.last_result = None;
+            }
         }
         state.status_message = "Executing...".to_string();
     });
@@ -338,8 +376,10 @@ pub fn execute_raw_query(sql: String, cx: &mut App) {
 
         let sql_clone = sql.clone();
         let row_count_for_record = cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.active_session_mut() {
-                s.is_executing = false;
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.is_executing = false;
+                }
             }
             match &result {
                 Ok(result) => {
@@ -348,10 +388,12 @@ pub fn execute_raw_query(sql: String, cx: &mut App) {
                         SqlResult::Modified(m) => (m.execution_time_ms, None, false),
                         SqlResult::Error(_) => (0, None, true),
                     };
-                    if let Some(s) = state.active_session_mut() {
-                        s.last_result = Some(Arc::new(result.clone()));
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(result.clone()));
+                        }
                     }
-                    record_history(state, &sql_clone, exec_ms, rc, err);
+                    record_history(state, session_id, &sql_clone, exec_ms, rc, err);
                     state.status_message = if err {
                         "Query failed".to_string()
                     } else {
@@ -363,17 +405,19 @@ pub fn execute_raw_query(sql: String, cx: &mut App) {
                     rc
                 }
                 Err(e) => {
-                    record_history(state, &sql_clone, 0, None, true);
+                    record_history(state, session_id, &sql_clone, 0, None, true);
                     is_error = true;
                     state.status_message = format!("Query failed: {}", e);
-                    if let Some(s) = state.active_session_mut() {
-                        s.last_result = Some(Arc::new(SqlResult::Error(
-                            dbstudio_core::result::ErrorResult {
-                                message: e.to_string(),
-                                sql: sql_clone.clone(),
-                                execution_time_ms: 0,
-                            },
-                        )));
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(SqlResult::Error(
+                                dbstudio_core::result::ErrorResult {
+                                    message: e.to_string(),
+                                    sql: sql_clone.clone(),
+                                    execution_time_ms: 0,
+                                },
+                            )));
+                        }
                     }
                     None
                 }
@@ -400,12 +444,10 @@ pub fn execute_raw_query(sql: String, cx: &mut App) {
 /// database's LIMIT/OFFSET dialect, offset by the rows already loaded. The
 /// merged result replaces `last_result` so the results panel observes the new
 /// row window.
-pub fn load_more_rows(cx: &mut App) {
+pub fn load_more_rows(window_id: u64, cx: &mut App) {
     let Some((sql, offset, db_type, conn)) = cx.update_global::<AppState, _>(|state, _cx| {
-        let conn = state.active_connection();
-        let session = state.active_session();
-        let conn = conn?;
-        let session = session?;
+        let conn = state.active_connection_for(window_id)?;
+        let session = state.active_session_for(window_id)?;
         let query = match session.last_result.as_deref() {
             Some(SqlResult::Query(q)) if q.truncated => q,
             _ => return None,
@@ -420,49 +462,62 @@ pub fn load_more_rows(cx: &mut App) {
         AppState::update_status(cx, "No more results to load".to_string());
         return;
     };
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
 
     let paged = paginate_query(&sql, MAX_RESULT_ROWS, offset, db_type);
     cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(s) = state.active_session_mut() {
-            s.is_executing = true;
+        if let Some(sid) = session_id {
+            if let Some(s) = state.session_mut(sid) {
+                s.is_executing = true;
+            }
         }
     });
 
-    cx.spawn(async move |cx| {
-        match conn.execute(&paged).await {
-            Ok(SqlResult::Query(page)) => {
-                cx.update_global::<AppState, _>(|state, _cx| {
-                    let loaded = apply_load_more(state, page);
-                    if let Some(s) = state.active_session_mut() {
+    cx.spawn(async move |cx| match conn.execute(&paged).await {
+        Ok(SqlResult::Query(page)) => {
+            cx.update_global::<AppState, _>(|state, _cx| {
+                let loaded = apply_load_more(state, session_id, page);
+                if let Some(sid) = session_id {
+                    if let Some(s) = state.session_mut(sid) {
                         s.is_executing = false;
                     }
-                    state.status_message = format!("Loaded {} more rows", loaded);
-                });
-            }
-            Ok(_) => {
-                cx.update_global::<AppState, _>(|state, _cx| {
-                    if let Some(s) = state.active_session_mut() {
+                }
+                state.status_message = format!("Loaded {} more rows", loaded);
+            });
+        }
+        Ok(_) => {
+            cx.update_global::<AppState, _>(|state, _cx| {
+                if let Some(sid) = session_id {
+                    if let Some(s) = state.session_mut(sid) {
                         s.is_executing = false;
                     }
-                    state.status_message = "Load more returned no rows".to_string();
-                });
-            }
-            Err(e) => {
-                cx.update_global::<AppState, _>(|state, _cx| {
-                    if let Some(s) = state.active_session_mut() {
+                }
+                state.status_message = "Load more returned no rows".to_string();
+            });
+        }
+        Err(e) => {
+            cx.update_global::<AppState, _>(|state, _cx| {
+                if let Some(sid) = session_id {
+                    if let Some(s) = state.session_mut(sid) {
                         s.is_executing = false;
                     }
-                    state.status_message = format!("Load more failed: {}", e);
-                });
-            }
+                }
+                state.status_message = format!("Load more failed: {}", e);
+            });
         }
     })
     .detach();
 }
 
-/// Append `page` to the active session's truncated result; returns rows added.
-fn apply_load_more(state: &mut AppState, page: QueryResult) -> usize {
-    let Some(s) = state.active_session_mut() else {
+/// Append `page` to the session `session_id`'s truncated result; returns rows added.
+fn apply_load_more(state: &mut AppState, session_id: Option<u64>, page: QueryResult) -> usize {
+    let Some(sid) = session_id else {
+        return 0;
+    };
+    let Some(s) = state.session_mut(sid) else {
         return 0;
     };
     let Some(SqlResult::Query(existing)) = s.last_result.as_deref() else {
@@ -485,6 +540,7 @@ fn apply_load_more(state: &mut AppState, page: QueryResult) -> usize {
 
 fn record_history(
     state: &mut AppState,
+    session_id: Option<u64>,
     sql: &str,
     execution_time_ms: u128,
     row_count: Option<usize>,
@@ -493,8 +549,8 @@ fn record_history(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let entry = QueryHistoryEntry {
         id: state.next_history_id,
-        connection_id: state
-            .active_session()
+        connection_id: session_id
+            .and_then(|sid| state.session(sid))
             .and_then(|s| s.connection_id.clone())
             .unwrap_or_default(),
         sql: sql.to_string(),
@@ -511,7 +567,13 @@ fn record_history(
 }
 
 /// Save (create or update) a connection in the store.
-pub fn save_connection(config: &ConnectionConfig, password: &str, ssh_password: &str, ssh_key_passphrase: &str, cx: &mut App) {
+pub fn save_connection(
+    config: &ConnectionConfig,
+    password: &str,
+    ssh_password: &str,
+    ssh_key_passphrase: &str,
+    cx: &mut App,
+) {
     let info = config.clone();
     let password = password.to_string();
     let ssh_password = ssh_password.to_string();
@@ -528,8 +590,12 @@ pub fn save_connection(config: &ConnectionConfig, password: &str, ssh_password: 
 
         match store.connections().save(&info, &password).await {
             Ok(_) => {
-                let _ = store.connections().set_ssh_password(&info.id, &ssh_password);
-                let _ = store.connections().set_ssh_passphrase(&info.id, &ssh_key_passphrase);
+                let _ = store
+                    .connections()
+                    .set_ssh_password(&info.id, &ssh_password);
+                let _ = store
+                    .connections()
+                    .set_ssh_passphrase(&info.id, &ssh_key_passphrase);
                 if let Ok(connections) = store.connections().load_all().await {
                     cx.update_global::<AppState, _>(|state, _cx| {
                         state.saved_connections = connections;
@@ -579,9 +645,13 @@ pub fn delete_connection(id: String, cx: &mut App) {
     .detach();
 }
 
-/// Switch the active database / schema for the active session and reload its tables.
-pub fn select_database(database: &str, cx: &mut App) {
-    let conn = match cx.global::<AppState>().active_connection().cloned() {
+/// Switch the active database / schema for the active session of `window_id` and reload its tables.
+pub fn select_database(database: &str, window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
         Some(conn) => conn,
         None => {
             AppState::update_status(cx, "Not connected".to_string());
@@ -589,7 +659,10 @@ pub fn select_database(database: &str, cx: &mut App) {
         }
     };
     let db = database.to_string();
-    let session_id = cx.global::<AppState>().active_session;
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
 
     cx.spawn(async move |cx| {
         if let Err(e) = conn.switch_database(&db).await {
@@ -599,12 +672,16 @@ pub fn select_database(database: &str, cx: &mut App) {
             return;
         }
         let databases = dbstudio_db::list_databases(&conn).await.unwrap_or_default();
-        let tables = dbstudio_db::list_tables(&conn, &db).await.unwrap_or_default();
+        let tables = dbstudio_db::list_tables(&conn, &db)
+            .await
+            .unwrap_or_default();
         cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.session_mut(session_id.unwrap_or(0)) {
-                s.databases = databases;
-                s.tables = tables;
-                s.active_database = Some(db);
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.databases = databases;
+                    s.tables = tables;
+                    s.active_database = Some(db);
+                }
             }
         });
     })
@@ -612,13 +689,20 @@ pub fn select_database(database: &str, cx: &mut App) {
 }
 
 /// Save then connect using a freshly built config (used by the form's Connect button).
-pub fn connect_config(config: &ConnectionConfig, password: &str, ssh_password: &str, ssh_key_passphrase: &str, cx: &mut App) {
+pub fn connect_config(
+    config: &ConnectionConfig,
+    password: &str,
+    ssh_password: &str,
+    ssh_key_passphrase: &str,
+    window_id: u64,
+    cx: &mut App,
+) {
     let info = config.clone();
     let password = password.to_string();
     let ssh_password = ssh_password.to_string();
     let ssh_key_passphrase = ssh_key_passphrase.to_string();
 
-    let id = new_session(&info.name, cx);
+    let id = new_session(&info.name, window_id, cx);
     cx.update_global::<AppState, _>(|state, _cx| {
         if let Some(s) = state.session_mut(id) {
             s.connection_id = Some(info.id.clone());
@@ -628,8 +712,12 @@ pub fn connect_config(config: &ConnectionConfig, password: &str, ssh_password: &
     cx.spawn(async move |cx| {
         if let Ok(store) = AppStore::singleton().await {
             let _ = store.connections().save(&info, &password).await;
-            let _ = store.connections().set_ssh_password(&info.id, &ssh_password);
-            let _ = store.connections().set_ssh_passphrase(&info.id, &ssh_key_passphrase);
+            let _ = store
+                .connections()
+                .set_ssh_password(&info.id, &ssh_password);
+            let _ = store
+                .connections()
+                .set_ssh_passphrase(&info.id, &ssh_key_passphrase);
         }
         cx.update_global::<AppState, _>(|state, _cx| {
             state.status_message = format!("Connecting to {}...", info.name);
@@ -639,39 +727,53 @@ pub fn connect_config(config: &ConnectionConfig, password: &str, ssh_password: &
     .detach();
 }
 
-/// Refresh the tables list for the active session.
-pub fn refresh_tables(cx: &mut App) {
-    let conn = match cx.global::<AppState>().active_connection().cloned() {
+/// Refresh the tables list for the active session of `window_id`.
+pub fn refresh_tables(window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
         Some(conn) => conn,
         None => return,
     };
-    let db = cx.global::<AppState>().active_database().cloned();
-    let session_id = cx.global::<AppState>().active_session;
+    let db = cx
+        .global::<AppState>()
+        .active_database_for(window_id)
+        .cloned();
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
 
     cx.spawn(async move |cx| {
         let tables = dbstudio_db::list_tables(&conn, db.as_deref().unwrap_or(""))
             .await
             .unwrap_or_default();
         cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.session_mut(session_id.unwrap_or(0)) {
-                s.tables = tables;
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.tables = tables;
+                }
             }
         });
     })
     .detach();
 }
 
-/// Toggle the tables panel visibility.
-pub fn toggle_tables(cx: &mut App) {
+/// Toggle the tables panel visibility in `window_id`.
+pub fn toggle_tables(window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
-        state.show_tables = !state.show_tables;
+        let ws = state.window_state_mut(window_id);
+        ws.show_tables = !ws.show_tables;
     });
 }
 
-/// Toggle the history panel visibility.
-pub fn toggle_history(cx: &mut App) {
+/// Toggle the history panel visibility in `window_id`.
+pub fn toggle_history(window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
-        state.show_history = !state.show_history;
+        let ws = state.window_state_mut(window_id);
+        ws.show_history = !ws.show_history;
     });
 }
 
@@ -696,15 +798,22 @@ pub fn clear_history(cx: &mut App) {
     .detach();
 }
 
-/// Load the full schema (columns/indexes/fks) for a table in the active session.
-pub fn load_table_schema(table: &str, schema: Option<&str>, cx: &mut App) {
-    let conn = match cx.global::<AppState>().active_connection().cloned() {
+/// Load the full schema (columns/indexes/fks) for a table in the active session of `window_id`.
+pub fn load_table_schema(table: &str, schema: Option<&str>, window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
         Some(conn) => conn,
         None => return,
     };
     let table = table.to_string();
     let schema = schema.map(|s| s.to_string());
-    let session_id = cx.global::<AppState>().active_session;
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
 
     cx.spawn(async move |cx| {
         let columns = dbstudio_db::list_columns(&conn, &table, schema.as_deref())
@@ -732,19 +841,22 @@ pub fn load_table_schema(table: &str, schema: Option<&str>, cx: &mut App) {
             },
         };
         cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(s) = state.session_mut(session_id.unwrap_or(0)) {
-                s.table_schemas.insert(table, table_schema);
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.table_schemas.insert(table, table_schema);
+                }
             }
         });
     })
     .detach();
 }
 
-/// Build a SELECT query with identifier quoting appropriate for the active database type.
-pub fn build_select_query(table: &str, schema: Option<&str>, cx: &App) -> String {
+/// Build a SELECT query with identifier quoting appropriate for the database
+/// type of the active connection in `window_id`.
+pub fn build_select_query(table: &str, schema: Option<&str>, window_id: u64, cx: &App) -> String {
     let db_type = cx
         .global::<AppState>()
-        .active_connection()
+        .active_connection_for(window_id)
         .map(|c| c.db_type())
         .unwrap_or(DatabaseType::SQLite);
 
@@ -785,16 +897,19 @@ pub fn paginate_query(sql: &str, limit: usize, offset: usize, db_type: DatabaseT
         DatabaseType::MSSQL => format!(
             "{wrapped} ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
         ),
-        DatabaseType::Oracle => format!("{wrapped} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"),
+        DatabaseType::Oracle => {
+            format!("{wrapped} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
+        }
         _ => format!("{wrapped} LIMIT {limit} OFFSET {offset}"),
     }
 }
 
-/// Quote a SQL identifier (table/column name) based on the active database type.
-pub fn quote_ident(name: &str, cx: &App) -> String {
+/// Quote a SQL identifier (table/column name) based on the database type of the
+/// active connection in `window_id`.
+pub fn quote_ident(name: &str, window_id: u64, cx: &App) -> String {
     let db_type = cx
         .global::<AppState>()
-        .active_connection()
+        .active_connection_for(window_id)
         .map(|c| c.db_type())
         .unwrap_or(DatabaseType::SQLite);
 
@@ -817,7 +932,14 @@ async fn connect_async(id: u64, info: ConnectionInfo, cx: &mut AsyncApp) {
         }
     }
 
-    match dbstudio_db::connect(&info, &password, ssh_password.as_deref(), ssh_key_passphrase.as_deref()).await {
+    match dbstudio_db::connect(
+        &info,
+        &password,
+        ssh_password.as_deref(),
+        ssh_key_passphrase.as_deref(),
+    )
+    .await
+    {
         Ok(conn) => {
             let mut databases = dbstudio_db::list_databases(&conn).await.unwrap_or_default();
             if databases.is_empty() {
@@ -834,7 +956,11 @@ async fn connect_async(id: u64, info: ConnectionInfo, cx: &mut AsyncApp) {
             let active_database = databases
                 .iter()
                 .find(|d| d.name == info.database)
-                .or_else(|| databases.iter().find(|d| d.name.eq_ignore_ascii_case(&info.database)))
+                .or_else(|| {
+                    databases
+                        .iter()
+                        .find(|d| d.name.eq_ignore_ascii_case(&info.database))
+                })
                 .map(|d| d.name.clone())
                 .or_else(|| databases.first().map(|d| d.name.clone()));
 
@@ -890,10 +1016,10 @@ pub fn generate_inverse(sql: &str, _label: &str) -> String {
     }
 }
 
-/// Undo the last applied edit by executing its inverse SQL.
-pub fn undo_last_edit(cx: &mut App) {
+/// Undo the last applied edit in the active session of `window_id`.
+pub fn undo_last_edit(window_id: u64, cx: &mut App) {
     let record = cx.update_global::<AppState, _>(|state, _cx| {
-        match state.active_session_mut() {
+        match state.active_session_mut_for(window_id) {
             Some(s) if !s.undo_stack.is_empty() => {
                 let record = s.undo_stack.pop().unwrap();
                 s.redo_stack.push(crate::state::guard::EditRecord {
@@ -909,7 +1035,7 @@ pub fn undo_last_edit(cx: &mut App) {
     if let Some(record) = record {
         // Only execute if the inverse is actual SQL (not a comment placeholder).
         if !record.inverse_sql.is_empty() && !record.inverse_sql.starts_with("--") {
-            execute_raw_query(record.inverse_sql, cx);
+            execute_raw_query(record.inverse_sql, window_id, cx);
             AppState::update_status(cx, format!("Undid {}", record.label));
         } else {
             AppState::update_status(cx, format!("Undo not available for: {}", record.label));
@@ -919,10 +1045,10 @@ pub fn undo_last_edit(cx: &mut App) {
     }
 }
 
-/// Redo the last undone edit by re-executing its forward SQL.
-pub fn redo_last_edit(cx: &mut App) {
+/// Redo the last undone edit in the active session of `window_id`.
+pub fn redo_last_edit(window_id: u64, cx: &mut App) {
     let record = cx.update_global::<AppState, _>(|state, _cx| {
-        match state.active_session_mut() {
+        match state.active_session_mut_for(window_id) {
             Some(s) if !s.redo_stack.is_empty() => {
                 let record = s.redo_stack.pop().unwrap();
                 s.undo_stack.push(crate::state::guard::EditRecord {
@@ -936,7 +1062,7 @@ pub fn redo_last_edit(cx: &mut App) {
         }
     });
     if let Some(record) = record {
-        execute_raw_query(record.forward_sql, cx);
+        execute_raw_query(record.forward_sql, window_id, cx);
         AppState::update_status(cx, format!("Redid {}", record.label));
     } else {
         AppState::update_status(cx, "Nothing to redo".to_string());
@@ -944,10 +1070,10 @@ pub fn redo_last_edit(cx: &mut App) {
 }
 
 /// Save a query as a favorite.
-pub fn save_favorite(name: &str, sql: &str, cx: &mut App) {
+pub fn save_favorite(name: &str, sql: &str, window_id: u64, cx: &mut App) {
     let connection_id = cx
         .global::<AppState>()
-        .active_connection_id()
+        .active_connection_id_for(window_id)
         .cloned();
     let name = name.to_string();
     let sql = sql.to_string();
@@ -1000,22 +1126,23 @@ pub fn delete_favorite(id: i64, cx: &mut App) {
     .detach();
 }
 
-/// Export the current database to a SQL dump file.
-pub fn export_database(path: &str, cx: &mut AsyncApp) {
+/// Export the current database (of the active session in `window_id`) to a SQL dump file.
+pub fn export_database(path: &str, window_id: u64, cx: &mut AsyncApp) {
     let path = path.to_string();
     cx.spawn(async move |cx| {
         let conn_result = cx.update_global::<AppState, _>(|state, _cx| {
-            state.active_session()
+            state
+                .active_session_for(window_id)
                 .and_then(|s| s.connection.as_ref().map(|c| c.clone()))
         });
-        
+
         let Some(conn) = conn_result else {
             return;
         };
-        
+
         let path = std::path::PathBuf::from(path);
         let config = dbstudio_db::export::ExportConfig::default();
-        
+
         match dbstudio_db::export::export_database(&conn, &path, &config, None).await {
             Ok(stats) => {
                 cx.update_global::<AppState, _>(|state, _cx| {
@@ -1037,29 +1164,28 @@ pub fn export_database(path: &str, cx: &mut AsyncApp) {
     .detach();
 }
 
-/// Import a SQL dump file into the current database.
-pub fn import_database(path: &str, cx: &mut AsyncApp) {
+/// Import a SQL dump file into the current database (of the active session in `window_id`).
+pub fn import_database(path: &str, window_id: u64, cx: &mut AsyncApp) {
     let path = path.to_string();
     cx.spawn(async move |cx| {
         let conn_result = cx.update_global::<AppState, _>(|state, _cx| {
-            state.active_session()
+            state
+                .active_session_for(window_id)
                 .and_then(|s| s.connection.clone())
         });
-        
+
         let Some(conn) = conn_result else {
             return;
         };
-        
+
         let path = std::path::PathBuf::from(path);
-        
+
         match dbstudio_db::export::import_database(&conn, &path, None).await {
             Ok(stats) => {
                 cx.update_global::<AppState, _>(|state, _cx| {
                     state.status_message = format!(
                         "Imported {} statements ({} rows, {} errors)",
-                        stats.statements_executed,
-                        stats.rows_imported,
-                        stats.errors
+                        stats.statements_executed, stats.rows_imported, stats.errors
                     );
                 });
             }

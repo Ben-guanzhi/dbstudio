@@ -1,12 +1,12 @@
-﻿use dbstudio_storage::types::ConnectionInfo;
 use crate::{
     DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, RedoLastEdit,
     ToggleAiPanel, ToggleComment, UndoLastEdit,
 };
+use dbstudio_storage::types::ConnectionInfo;
 use dbstudio_ui::components::ai_panel::AiPanel;
+use dbstudio_ui::components::command_palette::{CommandPalette, CommandPaletteEvent};
 use dbstudio_ui::components::connection_form::{ConnectionForm, ConnectionFormEvent};
 use dbstudio_ui::components::connection_list::{ConnectionList, ConnectionListEvent};
-use dbstudio_ui::components::command_palette::{CommandPalette, CommandPaletteEvent};
 use dbstudio_ui::components::footer_bar::{FooterBar, FooterEvent};
 use dbstudio_ui::components::header_bar::{HeaderBar, HeaderEvent};
 use dbstudio_ui::components::history_panel::HistoryPanel;
@@ -14,29 +14,24 @@ use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
 use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
 use dbstudio_ui::state::{
-    AppState, ConnectionStatus, connect, delete_connection, execute_query, export_database,
-    import_database, load_table_schema, select_database,
+    connect, delete_connection, execute_query, export_database, import_database, load_table_schema,
+    select_database, AppState, ConnectionStatus,
 };
 use dbstudio_ui::utils::toolbar_divider;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Icon,
-    IconName,
-    Root,
-    Sizable as _,
-    StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{resizable_panel, v_resizable},
     spinner::Spinner,
-    v_flex,
+    v_flex, ActiveTheme as _, Icon, IconName, Root, Sizable as _, StyledExt as _,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Workspace {
+    window_id: u64,
     header: Entity<HeaderBar>,
     connections: Entity<ConnectionList>,
     tables: Entity<TablesTree>,
@@ -64,26 +59,40 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Entity<ConnectionForm> {
         let form = ConnectionForm::view(editing, window, cx);
-        cx.subscribe_in(&form, window, |this, _entity, event, _window, cx| match event {
-            ConnectionFormEvent::Saved | ConnectionFormEvent::Canceled => {
-                this.form = None;
-                this.show_form = false;
-                this.inline_form = false;
-                cx.notify();
-            }
-        })
+        cx.subscribe_in(
+            &form,
+            window,
+            |this, _entity, event, _window, cx| match event {
+                ConnectionFormEvent::Saved | ConnectionFormEvent::Canceled => {
+                    this.form = None;
+                    this.show_form = false;
+                    this.inline_form = false;
+                    cx.notify();
+                }
+            },
+        )
         .detach();
         form
     }
 
-    fn open_form(&mut self, editing: Option<ConnectionInfo>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_form(
+        &mut self,
+        editing: Option<ConnectionInfo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.form = Some(self.create_form(editing, window, cx));
         self.show_form = true;
         self.inline_form = false;
         cx.notify();
     }
 
-    fn open_home_form(&mut self, editing: Option<ConnectionInfo>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_home_form(
+        &mut self,
+        editing: Option<ConnectionInfo>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.selected_connection = None;
         self.form = Some(self.create_form(editing, window, cx));
         self.inline_form = true;
@@ -135,13 +144,20 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let TablesEvent::TableSelected(table) = event;
-        load_table_schema(&table.name, table.schema.as_deref(), cx);
-        let query = dbstudio_ui::state::build_select_query(&table.name, table.schema.as_deref(), cx);
+        let table = table.clone();
+        load_table_schema(&table.name, table.schema.as_deref(), self.window_id, cx);
+        let query = dbstudio_ui::state::build_select_query(
+            &table.name,
+            table.schema.as_deref(),
+            self.window_id,
+            cx,
+        );
         self.editor
             .update(cx, |this, cx| this.set_query(query.clone(), window, cx));
-        self.results
-            .update(cx, |this, cx| this.select_table(table.name.clone(), None, cx));
-        execute_query(query, cx);
+        self.results.update(cx, |this, cx| {
+            this.select_table(table.name.clone(), None, cx)
+        });
+        execute_query(query, self.window_id, cx);
     }
 
     fn on_editor_event(
@@ -152,7 +168,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let EditorEvent::ExecuteQuery(sql) = event;
-        execute_query(sql.clone(), cx);
+        execute_query(sql.clone(), self.window_id, cx);
     }
 
     fn on_command_palette_event(
@@ -173,33 +189,35 @@ impl Workspace {
                         .value()
                         .to_string();
                     if !query.trim().is_empty() {
-                        execute_query(query, cx);
+                        execute_query(query, self.window_id, cx);
                     }
                 } else {
-                    execute_query(sql.clone(), cx);
+                    execute_query(sql.clone(), self.window_id, cx);
                 }
             }
             CommandPaletteEvent::SelectTable(table) => {
                 let table = table.clone();
                 let schema = cx
                     .global::<AppState>()
-                    .tables()
+                    .tables_for(self.window_id)
                     .iter()
                     .find(|t| t.name == table)
-                    .map(|t| t.schema.clone())
-                    .flatten();
-                load_table_schema(&table, schema.as_deref(), cx);
-                let query =
-                    dbstudio_ui::state::build_select_query(&table, schema.as_deref(), cx);
-                self.editor.update(cx, |this, cx| {
-                    this.set_query(query.clone(), window, cx);
-                });
+                    .and_then(|t| t.schema.clone());
+                load_table_schema(&table, schema.as_deref(), self.window_id, cx);
+                let query = dbstudio_ui::state::build_select_query(
+                    &table,
+                    schema.as_deref(),
+                    self.window_id,
+                    cx,
+                );
+                self.editor
+                    .update(cx, |this, cx| this.set_query(query.clone(), window, cx));
                 self.results
                     .update(cx, |this, cx| this.select_table(table.clone(), None, cx));
-                execute_query(query, cx);
+                execute_query(query, self.window_id, cx);
             }
             CommandPaletteEvent::SelectDatabase(database) => {
-                select_database(database, cx);
+                select_database(database, self.window_id, cx);
             }
             CommandPaletteEvent::RunCommand(cmd) => match cmd.as_str() {
                 "editor-format" => {
@@ -243,11 +261,12 @@ impl Workspace {
                     &std::env::current_dir().unwrap_or_default(),
                     Some("database.sql"),
                 );
+                let window_id = self.window_id;
                 cx.spawn(async move |_this, cx| {
                     let Some(path) = rx.await.ok().and_then(Result::ok).flatten() else {
                         return;
                     };
-                    export_database(&path.to_string_lossy(), cx);
+                    export_database(&path.to_string_lossy(), window_id, cx);
                 })
                 .detach();
             }
@@ -258,6 +277,7 @@ impl Workspace {
                     multiple: false,
                     prompt: Some("Select a SQL dump to import".into()),
                 });
+                let window_id = self.window_id;
                 cx.spawn(async move |_this, cx| {
                     let Some(paths) = rx.await.ok().and_then(Result::ok).flatten() else {
                         return;
@@ -265,7 +285,7 @@ impl Workspace {
                     let Some(path) = paths.first() else {
                         return;
                     };
-                    import_database(&path.to_string_lossy(), cx);
+                    import_database(&path.to_string_lossy(), window_id, cx);
                 })
                 .detach();
             }
@@ -283,22 +303,39 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_connect_selected(&mut self, info: &ConnectionInfo, _window: &mut Window, cx: &mut Context<Self>) {
-        connect(info, cx);
+    fn on_connect_selected(
+        &mut self,
+        info: &ConnectionInfo,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        connect(info, self.window_id, cx);
         self.selected_connection = None;
-        self.connections.update(cx, |list, cx| list.set_selected(None, cx));
+        self.connections
+            .update(cx, |list, cx| list.set_selected(None, cx));
         cx.notify();
     }
 
-    fn on_edit_selected(&mut self, info: &ConnectionInfo, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_edit_selected(
+        &mut self,
+        info: &ConnectionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.selected_connection = None;
         self.open_home_form(Some(info.clone()), window, cx);
     }
 
-    fn on_delete_selected(&mut self, info: &ConnectionInfo, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_delete_selected(
+        &mut self,
+        info: &ConnectionInfo,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         delete_connection(info.id.clone(), cx);
         self.selected_connection = None;
-        self.connections.update(cx, |list, cx| list.set_selected(None, cx));
+        self.connections
+            .update(cx, |list, cx| list.set_selected(None, cx));
         cx.notify();
     }
 
@@ -326,10 +363,11 @@ impl Workspace {
         cx.subscribe_in(&footer, window, Self::on_footer_event)
             .detach();
 
+        let window_id = window.window_handle().window_id().as_u64();
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            let active = state.active_connection().is_some();
-            this.connecting = state.connection_state() == ConnectionStatus::Connecting;
+            let active = state.active_connection_for(window_id).is_some();
+            this.connecting = state.connection_state_for(window_id) == ConnectionStatus::Connecting;
             if active && !this.is_active {
                 this.form = None;
                 this.show_form = false;
@@ -342,6 +380,7 @@ impl Workspace {
 
         let state = cx.global::<AppState>();
         Self {
+            window_id,
             header,
             connections,
             tables,
@@ -356,15 +395,15 @@ impl Workspace {
             show_form: false,
             show_ai_panel: false,
             form: None,
-            is_active: state.active_connection().is_some(),
-            connecting: state.connection_state() == ConnectionStatus::Connecting,
+            is_active: state.active_connection_for(window_id).is_some(),
+            connecting: state.connection_state_for(window_id) == ConnectionStatus::Connecting,
             _subscriptions,
         }
     }
 
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
         let entity = cx.new(|cx| Self::new(window, cx));
-        
+
         // Check for URL scheme argument
         if let Some(url_str) = dbstudio_ui::url_scheme::find_url_in_args() {
             if let Some(url) = dbstudio_ui::url_scheme::DbStudioUrl::parse(&url_str) {
@@ -375,13 +414,17 @@ impl Workspace {
                 }
             }
         }
-        
+
         entity
     }
 
-    fn handle_url_connect(&mut self, url: dbstudio_ui::url_scheme::DbStudioUrl, cx: &mut Context<Self>) {
+    fn handle_url_connect(
+        &mut self,
+        url: dbstudio_ui::url_scheme::DbStudioUrl,
+        cx: &mut Context<Self>,
+    ) {
         use dbstudio_core::models::{ConnectionConfig, DatabaseType};
-        
+
         let db_type = match url.db_type() {
             Some("sqlite") => DatabaseType::SQLite,
             Some("mysql") => DatabaseType::MySQL,
@@ -390,14 +433,14 @@ impl Workspace {
             Some("oracle") => DatabaseType::Oracle,
             _ => return,
         };
-        
+
         let _password = url.password().unwrap_or("").to_string();
-        
+
         let mut config = ConnectionConfig::new(
             db_type,
             format!("{} Connection", url.db_type().unwrap_or("Unknown")),
         );
-        
+
         if let Some(host) = url.host() {
             config.host = host.to_string();
         }
@@ -410,7 +453,7 @@ impl Workspace {
         if let Some(username) = url.username() {
             config.username = username.to_string();
         }
-        
+
         // Create a ConnectionInfo and connect
         let info = ConnectionInfo {
             id: config.id.clone(),
@@ -436,8 +479,8 @@ impl Workspace {
             created_at: config.created_at.clone(),
             updated_at: config.updated_at.clone(),
         };
-        
-        connect(&info, cx);
+
+        connect(&info, self.window_id, cx);
     }
 }
 
@@ -451,32 +494,26 @@ impl Render for Workspace {
 
         if self.show_form {
             if let Some(form) = &self.form {
-                root = root
-                    .child(
-                        div()
-                            .id("form-overlay")
-                            .absolute()
-                            .inset_0()
-                            .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                                this.show_form = false;
-                                this.form = None;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .bg(gpui::black().opacity(0.4)),
-                            )
-                            .child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(form.clone()),
-                            ),
-                    );
+                root = root.child(
+                    div()
+                        .id("form-overlay")
+                        .absolute()
+                        .inset_0()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                            this.show_form = false;
+                            this.form = None;
+                            cx.notify();
+                        }))
+                        .child(div().absolute().inset_0().bg(gpui::black().opacity(0.4)))
+                        .child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .items_center()
+                                .justify_center()
+                                .child(form.clone()),
+                        ),
+                );
             }
         }
 
@@ -513,17 +550,15 @@ impl Render for Workspace {
         .on_action(cx.listener(|this, _: &ToggleAiPanel, _window, cx| {
             this.toggle_ai_panel(cx);
         }))
-        .on_action(cx.listener(|_this, _: &UndoLastEdit, _window, cx| {
-            dbstudio_ui::state::undo_last_edit(cx);
+        .on_action(cx.listener(|this, _: &UndoLastEdit, _window, cx| {
+            dbstudio_ui::state::undo_last_edit(this.window_id, cx);
         }))
-        .on_action(cx.listener(|_this, _: &RedoLastEdit, _window, cx| {
-            dbstudio_ui::state::redo_last_edit(cx);
+        .on_action(cx.listener(|this, _: &RedoLastEdit, _window, cx| {
+            dbstudio_ui::state::redo_last_edit(this.window_id, cx);
         }))
-
         .children(Root::render_notification_layer(window, cx))
     }
 }
-
 
 mod home_view;
 mod workspace_view;
@@ -552,8 +587,16 @@ fn window_control_buttons(cx: &mut Context<Workspace>) -> impl IntoElement {
                 .content_center()
                 .items_center()
                 .text_color(cx.theme().foreground)
-                .hover(|style| style.bg(cx.theme().list_active).text_color(cx.theme().foreground))
-                .active(|style| style.bg(cx.theme().list_active).text_color(cx.theme().foreground))
+                .hover(|style| {
+                    style
+                        .bg(cx.theme().list_active)
+                        .text_color(cx.theme().foreground)
+                })
+                .active(|style| {
+                    style
+                        .bg(cx.theme().list_active)
+                        .text_color(cx.theme().foreground)
+                })
                 .window_control_area(WindowControlArea::Max)
                 .child(Icon::new(IconName::WindowMaximize).size_3_5()),
         )

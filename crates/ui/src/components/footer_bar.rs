@@ -21,6 +21,7 @@ pub enum FooterEvent {
 impl EventEmitter<FooterEvent> for FooterBar {}
 
 pub struct FooterBar {
+    window_id: u64,
     connection_state: crate::state::ConnectionStatus,
     active_database: Option<String>,
     status_message: String,
@@ -30,28 +31,32 @@ pub struct FooterBar {
 }
 
 impl FooterBar {
-    pub fn view(_window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(Self::new)
+    pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, cx))
     }
 
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, cx: &mut Context<Self>) -> Self {
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            this.connection_state = state.connection_state();
-            this.active_database = state.active_database().cloned();
+            let ws = state.window_state(this.window_id);
+            this.connection_state = state.connection_state_for(this.window_id);
+            this.active_database = state.active_database_for(this.window_id).cloned();
             this.status_message = state.status_message.clone();
-            this.show_tables = state.show_tables;
-            this.show_history = state.show_history;
+            this.show_tables = ws.show_tables;
+            this.show_history = ws.show_history;
             cx.notify();
         })];
 
         let state = cx.global::<AppState>();
+        let ws = state.window_state(window_id);
         Self {
-            connection_state: state.connection_state(),
-            active_database: state.active_database().cloned(),
+            window_id,
+            connection_state: state.connection_state_for(window_id),
+            active_database: state.active_database_for(window_id).cloned(),
             status_message: state.status_message.clone(),
-            show_tables: state.show_tables,
-            show_history: state.show_history,
+            show_tables: ws.show_tables,
+            show_history: ws.show_history,
             _subscriptions,
         }
     }
@@ -71,8 +76,8 @@ impl Render for FooterBar {
             .ghost()
             .tooltip("Toggle Tables Panel")
             .disabled(!is_connected)
-            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                crate::state::toggle_tables(cx);
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                crate::state::toggle_tables(this.window_id, cx);
             }));
 
         let history_button = Button::new("footer-history")
@@ -85,8 +90,8 @@ impl Render for FooterBar {
             .ghost()
             .tooltip("Toggle History Panel")
             .disabled(!is_connected)
-            .on_click(cx.listener(|_this, _: &ClickEvent, _, cx| {
-                crate::state::toggle_history(cx);
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                crate::state::toggle_history(this.window_id, cx);
             }));
 
         let agent_button = Button::new("footer-agent")

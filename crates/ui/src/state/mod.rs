@@ -80,23 +80,46 @@ impl ConnectionSession {
     }
 }
 
+/// Window-local UI state: which session this window displays, plus window-only
+/// toggles. Multiple windows share the global `sessions` catalog but each keeps
+/// its own active session pointer, so two windows can be on different
+/// connections/databases without disturbing one another.
+#[derive(Debug, Clone)]
+pub struct WindowState {
+    pub active_session: Option<u64>,
+    /// A dangerous query awaiting user confirmation before execution.
+    pub pending_dangerous_query: Option<(String, WriteKind)>,
+    pub show_tables: bool,
+    pub show_history: bool,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            active_session: None,
+            pending_dangerous_query: None,
+            show_tables: true,
+            show_history: false,
+        }
+    }
+}
+
 /// Global application state shared across the UI.
 ///
-/// Connection-scoped state lives in [`ConnectionSession`]s; the currently
-/// visible one is `active_session`. Fields not tied to a connection (saved
-/// connections, history, panels, status) live here directly.
+/// Connection-scoped state lives in [`ConnectionSession`]s (one shared catalog);
+/// the session visible in *each window* is tracked per window id in `windows`.
+/// Fields not tied to a connection (saved connections, history, panels, prefs)
+/// live here directly.
 pub struct AppState {
+    /// Every open session, across all windows.
     pub sessions: Vec<ConnectionSession>,
-    pub active_session: Option<u64>,
+    /// The active session per window (keyed by `WindowId::as_u64()`).
+    pub windows: HashMap<u64, WindowState>,
     pub next_session_id: u64,
     pub saved_connections: Vec<ConnectionInfo>,
     pub status_message: String,
     pub query_history: Vec<QueryHistoryEntry>,
     pub next_history_id: i64,
-    pub show_tables: bool,
-    pub show_history: bool,
-    /// A dangerous query awaiting user confirmation before execution.
-    pub pending_dangerous_query: Option<(String, WriteKind)>,
     /// Saved favorite queries.
     pub favorites: Vec<FavoriteEntry>,
     /// Global safe-mode toggle. When enabled, every write statement requires
@@ -109,14 +132,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The session currently displayed, if any.
-    pub fn active_session(&self) -> Option<&ConnectionSession> {
-        let id = self.active_session?;
+    /// The session currently displayed in a given window, if any.
+    pub fn active_session_for(&self, window_id: u64) -> Option<&ConnectionSession> {
+        let id = self.window_state(window_id).active_session?;
         self.sessions.iter().find(|s| s.id == id)
     }
 
-    pub fn active_session_mut(&mut self) -> Option<&mut ConnectionSession> {
-        let id = self.active_session?;
+    pub fn active_session_mut_for(&mut self, window_id: u64) -> Option<&mut ConnectionSession> {
+        let id = self.window_state_mut(window_id).active_session?;
         self.sessions.iter_mut().find(|s| s.id == id)
     }
 
@@ -128,62 +151,94 @@ impl AppState {
         self.sessions.iter_mut().find(|s| s.id == id)
     }
 
-    // ---- Proxy accessors to the active session ----
-    // These keep the (single-connection era) call sites working unchanged.
-
-    pub fn active_connection(&self) -> Option<&Arc<Connection>> {
-        self.active_session().and_then(|s| s.connection.as_ref())
+    /// Window-local state, materializing a default (disconnected) one on first use.
+    pub fn window_state(&self, window_id: u64) -> &WindowState {
+        self.windows
+            .get(&window_id)
+            .unwrap_or_else(|| EMPTY_WINDOW.get_or_init(WindowState::default))
     }
 
-    pub fn connection_state(&self) -> ConnectionStatus {
-        self.active_session()
+    pub fn window_state_mut(&mut self, window_id: u64) -> &mut WindowState {
+        self.windows.entry(window_id).or_default()
+    }
+
+    /// Set (or clear) the active session pointer for a window.
+    pub fn set_active_session(&mut self, window_id: u64, id: Option<u64>) {
+        self.window_state_mut(window_id).active_session = id;
+    }
+
+    // ---- Proxy accessors to the active session *in a window* ----
+
+    pub fn active_connection_for(&self, window_id: u64) -> Option<&Arc<Connection>> {
+        self.active_session_for(window_id)
+            .and_then(|s| s.connection.as_ref())
+    }
+
+    pub fn connection_state_for(&self, window_id: u64) -> ConnectionStatus {
+        self.active_session_for(window_id)
             .map(|s| s.connection_state)
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.connection_state() == ConnectionStatus::Connected
+    pub fn is_connected_for(&self, window_id: u64) -> bool {
+        self.connection_state_for(window_id) == ConnectionStatus::Connected
     }
 
-    pub fn active_database(&self) -> Option<&String> {
-        self.active_session().and_then(|s| s.active_database.as_ref())
+    pub fn active_database_for(&self, window_id: u64) -> Option<&String> {
+        self.active_session_for(window_id)
+            .and_then(|s| s.active_database.as_ref())
     }
 
-    pub fn databases(&self) -> &[DatabaseInfo] {
-        self.active_session()
+    pub fn databases_for(&self, window_id: u64) -> &[DatabaseInfo] {
+        self.active_session_for(window_id)
             .map(|s| s.databases.as_slice())
             .unwrap_or(&[])
     }
 
-    pub fn tables(&self) -> &[TableInfo] {
-        self.active_session().map(|s| s.tables.as_slice()).unwrap_or(&[])
+    pub fn tables_for(&self, window_id: u64) -> &[TableInfo] {
+        self.active_session_for(window_id)
+            .map(|s| s.tables.as_slice())
+            .unwrap_or(&[])
     }
 
-    pub fn table_schemas(&self) -> &HashMap<String, TableSchema> {
-        match self.active_session() {
+    pub fn table_schemas_for(&self, window_id: u64) -> &HashMap<String, TableSchema> {
+        match self.active_session_for(window_id) {
             Some(s) => &s.table_schemas,
             None => empty_schemas(),
         }
     }
 
-    pub fn last_result(&self) -> Option<&Arc<SqlResult>> {
-        self.active_session().and_then(|s| s.last_result.as_ref())
+    pub fn last_result_for(&self, window_id: u64) -> Option<&Arc<SqlResult>> {
+        self.active_session_for(window_id)
+            .and_then(|s| s.last_result.as_ref())
     }
 
-    pub fn is_executing(&self) -> bool {
-        self.active_session().map(|s| s.is_executing).unwrap_or(false)
+    pub fn is_executing_for(&self, window_id: u64) -> bool {
+        self.active_session_for(window_id)
+            .map(|s| s.is_executing)
+            .unwrap_or(false)
     }
 
-    pub fn active_connection_name(&self) -> Option<&String> {
-        self.active_session().map(|s| &s.name)
+    pub fn active_connection_name_for(&self, window_id: u64) -> Option<&String> {
+        self.active_session_for(window_id).map(|s| &s.name)
     }
 
-    pub fn active_connection_id(&self) -> Option<&String> {
-        self.active_session().and_then(|s| s.connection_id.as_ref())
+    pub fn active_connection_id_for(&self, window_id: u64) -> Option<&String> {
+        self.active_session_for(window_id)
+            .and_then(|s| s.connection_id.as_ref())
+    }
+
+    /// Whether any window currently has this session open (used by close logic).
+    pub fn is_session_open_in_window(&self, session_id: u64) -> bool {
+        self.windows
+            .values()
+            .any(|w| w.active_session == Some(session_id))
     }
 }
 
-static EMPTY_SCHEMAS: std::sync::OnceLock<HashMap<String, TableSchema>> = std::sync::OnceLock::new();
+static EMPTY_SCHEMAS: std::sync::OnceLock<HashMap<String, TableSchema>> =
+    std::sync::OnceLock::new();
+static EMPTY_WINDOW: std::sync::OnceLock<WindowState> = std::sync::OnceLock::new();
 
 fn empty_schemas() -> &'static HashMap<String, TableSchema> {
     EMPTY_SCHEMAS.get_or_init(HashMap::new)
@@ -193,17 +248,17 @@ impl Global for AppState {}
 
 impl AppState {
     pub fn init(cx: &mut App) {
+        if cx.has_global::<AppState>() {
+            return;
+        }
         cx.set_global(AppState {
             sessions: Vec::new(),
-            active_session: None,
+            windows: HashMap::new(),
             next_session_id: 1,
             saved_connections: Vec::new(),
             status_message: "Not connected".to_string(),
             query_history: Vec::new(),
             next_history_id: 1,
-            show_tables: true,
-            show_history: false,
-            pending_dangerous_query: None,
             favorites: Vec::new(),
             safe_mode: true,
             vim_mode: false,
@@ -222,18 +277,26 @@ impl AppState {
                     if let Ok(history) = store.history().load_recent(200).await {
                         cx.update_global::<AppState, _>(|app_state, _cx| {
                             app_state.query_history = history;
-                            if let Some(max_id) =
-                                app_state.query_history.iter().map(|e| e.id).max()
+                            if let Some(max_id) = app_state.query_history.iter().map(|e| e.id).max()
                             {
                                 app_state.next_history_id = max_id + 1;
                             }
                         });
                     }
-                    let ai_config = dbstudio_storage::ai_settings::load_ai_config(store.pool()).await;
-                    let safe_mode =
-                        dbstudio_storage::settings::get_setting_bool(store.pool(), "app.safe_mode", true).await;
-                    let vim_mode =
-                        dbstudio_storage::settings::get_setting_bool(store.pool(), "app.vim_mode", false).await;
+                    let ai_config =
+                        dbstudio_storage::ai_settings::load_ai_config(store.pool()).await;
+                    let safe_mode = dbstudio_storage::settings::get_setting_bool(
+                        store.pool(),
+                        "app.safe_mode",
+                        true,
+                    )
+                    .await;
+                    let vim_mode = dbstudio_storage::settings::get_setting_bool(
+                        store.pool(),
+                        "app.vim_mode",
+                        false,
+                    )
+                    .await;
                     cx.update_global::<AppState, _>(|app_state, _cx| {
                         app_state.ai_config = ai_config;
                         app_state.safe_mode = safe_mode;

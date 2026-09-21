@@ -67,6 +67,7 @@ fn all_providers() -> Vec<ProviderOption> {
 }
 
 pub struct AiPanel {
+    window_id: u64,
     chat_input: Entity<InputState>,
     messages: Vec<AiMessage>,
     active_tab: AiTab,
@@ -83,7 +84,8 @@ pub struct AiPanel {
 
 impl AiPanel {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(window, cx))
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, window, cx))
     }
 
     fn text_input(
@@ -105,7 +107,7 @@ impl AiPanel {
         })
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let chat_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Ask about SQL...")
@@ -114,7 +116,7 @@ impl AiPanel {
 
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            if let Some(session) = state.active_session() {
+            if let Some(session) = state.active_session_for(this.window_id) {
                 this.current_sql = session.editor_text.clone();
             }
             cx.notify();
@@ -142,6 +144,7 @@ impl AiPanel {
         let api_key = Self::text_input(window, cx, "API key", true);
 
         let mut panel = Self {
+            window_id,
             chat_input,
             messages: Vec::new(),
             active_tab: AiTab::Chat,
@@ -229,8 +232,8 @@ impl AiPanel {
     }
 
     /// Summarize the active session's loaded schemas as LLM context.
-    fn schema_context(cx: &Context<Self>) -> String {
-        let schemas = cx.global::<AppState>().table_schemas();
+    fn schema_context(&self, cx: &Context<Self>) -> String {
+        let schemas = cx.global::<AppState>().table_schemas_for(self.window_id);
         if schemas.is_empty() {
             return "No schema loaded for the active connection.".to_string();
         }
@@ -310,7 +313,7 @@ impl AiPanel {
             Self::system_prompt(),
             ChatMessage {
                 role: Role::User,
-                content: format!("Schema context:\n{}", Self::schema_context(cx)),
+                content: format!("Schema context:\n{}", self.schema_context(cx)),
             },
             ChatMessage {
                 role: Role::User,
@@ -336,7 +339,7 @@ impl AiPanel {
             Self::system_prompt(),
             ChatMessage {
                 role: Role::User,
-                content: format!("Schema context:\n{}", Self::schema_context(cx)),
+                content: format!("Schema context:\n{}", self.schema_context(cx)),
             },
             ChatMessage {
                 role: Role::User,

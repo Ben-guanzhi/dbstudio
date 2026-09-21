@@ -21,28 +21,31 @@ pub enum HeaderEvent {
 impl EventEmitter<HeaderEvent> for HeaderBar {}
 
 pub struct HeaderBar {
+    window_id: u64,
     connection_state: ConnectionStatus,
     active_connection_name: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl HeaderBar {
-    pub fn view(_window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(Self::new)
+    pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, cx))
     }
 
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, cx: &mut Context<Self>) -> Self {
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            this.connection_state = state.connection_state();
-            this.active_connection_name = state.active_connection_name().cloned();
+            this.connection_state = state.connection_state_for(this.window_id);
+            this.active_connection_name = state.active_connection_name_for(this.window_id).cloned();
             cx.notify();
         })];
 
         let state = cx.global::<AppState>();
         Self {
-            connection_state: state.connection_state(),
-            active_connection_name: state.active_connection_name().cloned(),
+            window_id,
+            connection_state: state.connection_state_for(window_id),
+            active_connection_name: state.active_connection_name_for(window_id).cloned(),
             _subscriptions,
         }
     }

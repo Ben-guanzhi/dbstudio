@@ -4,14 +4,44 @@ mod themes;
 mod window;
 mod workspace;
 
-use gpui::{App, AppContext as _, actions};
-use gpui_component::{Root, theme};
+use gpui::{actions, App, AppContext as _};
+use gpui_component::{theme, Root};
 use themes::*;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
+use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 use window::*;
 use workspace::*;
 
-actions!(window, [Quit, ToggleTheme, OpenCommandPalette, FormatSql, ToggleComment, ToggleAiPanel, UndoLastEdit, RedoLastEdit, DuplicateLine, MoveLineUp, MoveLineDown]);
+actions!(
+    window,
+    [
+        NewWindow,
+        Quit,
+        ToggleTheme,
+        OpenCommandPalette,
+        FormatSql,
+        ToggleComment,
+        ToggleAiPanel,
+        UndoLastEdit,
+        RedoLastEdit,
+        DuplicateLine,
+        MoveLineUp,
+        MoveLineDown
+    ]
+);
+
+fn open_workspace_window(cx: &mut App) {
+    let window_options = get_window_options(cx);
+    cx.open_window(window_options, |win, cx| {
+        gpui_component::init(cx);
+        theme::init(cx);
+        dbstudio_ui::state::init(cx);
+        load_theme_mode(cx);
+
+        let workspace_view = Workspace::view(win, cx);
+        cx.new(|cx| Root::new(workspace_view, win, cx))
+    })
+    .unwrap();
+}
 
 fn init_logging() {
     let debug = std::env::args().any(|arg| arg == "--debug" || arg == "-d");
@@ -52,18 +82,11 @@ fn main() {
         })
         .detach();
 
-        let window_options = get_window_options(cx);
-        cx.open_window(window_options, |win, cx| {
-            gpui_component::init(cx);
-            theme::init(cx);
-            dbstudio_ui::state::init(cx);
-            load_theme_mode(cx);
+        open_workspace_window(cx);
 
-            let workspace_view = Workspace::view(win, cx);
-            cx.new(|cx| Root::new(workspace_view, win, cx))
-        })
-        .unwrap();
-
+        cx.on_action(|_: &NewWindow, cx| {
+            open_workspace_window(cx);
+        });
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ToggleTheme, cx| {
             toggle_color_mode(None, cx);

@@ -39,6 +39,7 @@ enum PaletteAction {
 }
 
 pub struct CommandPalette {
+    window_id: u64,
     input_state: Entity<InputState>,
     items: Vec<PaletteItem>,
     filtered_items: Vec<usize>,
@@ -49,10 +50,11 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(window, cx))
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, window, cx))
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Type a command or search...")
@@ -69,6 +71,7 @@ impl CommandPalette {
         ];
 
         let mut palette = Self {
+            window_id,
             input_state,
             items: Vec::new(),
             filtered_items: Vec::new(),
@@ -86,17 +89,17 @@ impl CommandPalette {
         self.items.clear();
 
         // Add tables
-        for table in state.tables() {
+        for table in state.tables_for(self.window_id) {
             self.items.push(PaletteItem {
                 label: table.name.clone(),
-                detail: Some(format!("Table · {}", table.table_type.display_name())),
+                detail: Some(format!("Table 路 {}", table.table_type.display_name())),
                 icon: IconName::LayoutDashboard,
                 action: PaletteAction::SelectTable(table.name.clone()),
             });
         }
 
         // Add databases
-        for db in state.databases() {
+        for db in state.databases_for(self.window_id) {
             self.items.push(PaletteItem {
                 label: db.name.clone(),
                 detail: Some("Database".to_string()),
@@ -111,11 +114,11 @@ impl CommandPalette {
             let mut detail = format!("{}@{}", conn.username, conn.host);
             if let Some(group) = &conn.group {
                 if !group.is_empty() {
-                    detail.push_str(&format!(" · {}", group));
+                    detail.push_str(&format!(" 路 {}", group));
                 }
             }
             if !conn.tags.is_empty() {
-                detail.push_str(&format!(" · #{}", conn.tags.join(" #")));
+                detail.push_str(&format!(" 路 #{}", conn.tags.join(" #")));
             }
             self.items.push(PaletteItem {
                 label: conn.name.clone(),
@@ -255,7 +258,7 @@ impl CommandPalette {
                                 .find(|c| c.id == conn_id)
                                 .cloned();
                             if let Some(conn) = conn {
-                                crate::state::connect(&conn, cx);
+                                crate::state::connect(&conn, self.window_id, cx);
                             }
                         }
                         _ => {

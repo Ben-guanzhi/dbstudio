@@ -1,4 +1,4 @@
-﻿use dbstudio_core::schema::TableInfo;
+use dbstudio_core::schema::TableInfo;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
@@ -35,6 +35,7 @@ impl EventEmitter<TablesEvent> for TablesTree {}
 actions!(tables_tree, [SelectItem]);
 
 pub struct TablesTree {
+    window_id: u64,
     tree_state: Entity<TreeState>,
     search_input: Entity<InputState>,
     selected_item: Option<TreeItem>,
@@ -46,10 +47,11 @@ pub struct TablesTree {
 
 impl TablesTree {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        cx.new(|cx| Self::new(window, cx))
+        let window_id = window.window_handle().window_id().as_u64();
+        cx.new(|cx| Self::new(window_id, window, cx))
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(window_id: u64, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search tables...")
@@ -57,7 +59,7 @@ impl TablesTree {
 
         let _subscriptions = vec![
             cx.observe_global::<AppState>(move |this, cx| {
-                let tables = cx.global::<AppState>().tables().to_vec();
+                let tables = cx.global::<AppState>().tables_for(this.window_id).to_vec();
                 this.tables = tables;
                 this.has_tables = !this.tables.is_empty();
                 this.rebuild_items(cx);
@@ -71,11 +73,12 @@ impl TablesTree {
         ];
 
         Self {
+            window_id,
             tree_state,
             search_input,
             selected_item: None,
-            has_tables: !cx.global::<AppState>().tables().is_empty(),
-            tables: cx.global::<AppState>().tables().to_vec(),
+            has_tables: !cx.global::<AppState>().tables_for(window_id).is_empty(),
+            tables: cx.global::<AppState>().tables_for(window_id).to_vec(),
             search_query: String::new(),
             _subscriptions,
         }
@@ -245,8 +248,8 @@ impl Render for TablesTree {
             .small()
             .ghost()
             .disabled(!self.has_tables)
-            .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
-                crate::state::refresh_tables(cx);
+.on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                crate::state::refresh_tables(this.window_id, cx);
             }));
 
         let header = div()

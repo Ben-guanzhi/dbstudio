@@ -83,7 +83,10 @@ impl WriteKind {
     pub fn is_destructive(&self) -> bool {
         matches!(
             self,
-            WriteKind::Drop | WriteKind::Truncate | WriteKind::DeleteNoWhere | WriteKind::UpdateNoWhere
+            WriteKind::Drop
+                | WriteKind::Truncate
+                | WriteKind::DeleteNoWhere
+                | WriteKind::UpdateNoWhere
         )
     }
 
@@ -123,12 +126,20 @@ pub fn classify_sql(sql: &str) -> Option<WriteKind> {
             Some(WriteKind::Select)
         }
         "INSERT" => Some(WriteKind::Insert),
-        "UPDATE" => {
-            has_where(trimmed).map(|has| if has { WriteKind::Update } else { WriteKind::UpdateNoWhere })
-        }
-        "DELETE" => {
-            has_where(trimmed).map(|has| if has { WriteKind::Delete } else { WriteKind::DeleteNoWhere })
-        }
+        "UPDATE" => has_where(trimmed).map(|has| {
+            if has {
+                WriteKind::Update
+            } else {
+                WriteKind::UpdateNoWhere
+            }
+        }),
+        "DELETE" => has_where(trimmed).map(|has| {
+            if has {
+                WriteKind::Delete
+            } else {
+                WriteKind::DeleteNoWhere
+            }
+        }),
         "DROP" => Some(WriteKind::Drop),
         "TRUNCATE" => Some(WriteKind::Truncate),
         "ALTER" => Some(WriteKind::Alter),

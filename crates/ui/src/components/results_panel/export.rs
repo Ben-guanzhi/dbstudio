@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 impl ResultsPanel {
     pub fn export_csv(&self, cx: &mut Context<Self>) {
@@ -42,7 +42,10 @@ impl ResultsPanel {
                         if cell.is_null {
                             map.insert(col.name.clone(), serde_json::Value::Null);
                         } else {
-                            map.insert(col.name.clone(), serde_json::Value::String(cell.value.clone()));
+                            map.insert(
+                                col.name.clone(),
+                                serde_json::Value::String(cell.value.clone()),
+                            );
                         }
                     }
                     serde_json::Value::Object(map)
@@ -56,4 +59,3 @@ impl ResultsPanel {
         spawn_export_result(result, path_display, cx);
     }
 }
-
