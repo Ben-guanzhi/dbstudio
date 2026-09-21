@@ -111,6 +111,17 @@ impl Workspace {
     ) {
         match event {
             HeaderEvent::ToggleTheme => crate::themes::toggle_color_mode(Some(window), cx),
+            HeaderEvent::ToggleTables => {
+                dbstudio_ui::state::toggle_tables(self.window_id, cx);
+                cx.notify();
+            }
+            HeaderEvent::ToggleHistory => {
+                dbstudio_ui::state::toggle_history(self.window_id, cx);
+                cx.notify();
+            }
+            HeaderEvent::ToggleAi => self.toggle_ai_panel(cx),
+            HeaderEvent::OpenPalette => self.open_command_palette(cx),
+            HeaderEvent::NewWindow => crate::open_workspace_window(cx),
             HeaderEvent::NewConnection => {
                 if self.is_active {
                     if !self.show_form {
