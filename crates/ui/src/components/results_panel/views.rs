@@ -754,7 +754,10 @@ impl ResultsPanel {
                                         .children(
                                             edits
                                                 .iter()
-                                                .map(|edit| self.render_review_item(edit, cx)),
+                                                .enumerate()
+                                                .map(|(ix, edit)| {
+                                                    self.render_review_item(ix, edit, cx)
+                                                }),
                                         )
                                         .into_any_element()
                                 },
@@ -800,6 +803,7 @@ impl ResultsPanel {
 
     fn render_review_item(
         &self,
+        index: usize,
         edit: &crate::state::guard::PendingWrite,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -872,6 +876,21 @@ impl ResultsPanel {
                         .text_color(cx.theme().muted_foreground)
                         .child(edit.sql.clone()),
                 },
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .child(
+                        Button::new(("review-apply-item", index))
+                            .label("Apply")
+                            .primary()
+                            .small()
+                            .on_click(cx.listener(
+                                move |this, _: &ClickEvent, _, cx| {
+                                    this.apply_pending(index, cx);
+                                },
+                            )),
+                    ),
             )
             .into_any_element()
     }

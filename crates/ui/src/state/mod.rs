@@ -102,6 +102,8 @@ pub struct AppState {
     /// Global safe-mode toggle. When enabled, every write statement requires
     /// confirmation before execution regardless of the connection environment.
     pub safe_mode: bool,
+    /// Whether Vim-style key handling is enabled for the SQL editor.
+    pub vim_mode: bool,
     /// Configured LLM provider used by the AI panel (openai / ollama / mock).
     pub ai_config: LlmConfig,
 }
@@ -204,6 +206,7 @@ impl AppState {
             pending_dangerous_query: None,
             favorites: Vec::new(),
             safe_mode: true,
+            vim_mode: false,
             ai_config: LlmConfig::default(),
         });
 
@@ -229,9 +232,12 @@ impl AppState {
                     let ai_config = dbstudio_storage::ai_settings::load_ai_config(store.pool()).await;
                     let safe_mode =
                         dbstudio_storage::settings::get_setting_bool(store.pool(), "app.safe_mode", true).await;
+                    let vim_mode =
+                        dbstudio_storage::settings::get_setting_bool(store.pool(), "app.vim_mode", false).await;
                     cx.update_global::<AppState, _>(|app_state, _cx| {
                         app_state.ai_config = ai_config;
                         app_state.safe_mode = safe_mode;
+                        app_state.vim_mode = vim_mode;
                     });
                 }
                 Err(e) => tracing::error!("Failed to init storage: {}", e),

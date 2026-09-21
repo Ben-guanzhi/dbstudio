@@ -9,3 +9,4 @@ pub mod results_panel;
 pub mod sql_editor;
 pub mod sql_completion;
 pub mod tables_tree;
+pub mod vim;

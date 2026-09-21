@@ -263,6 +263,29 @@ pub fn toggle_safe_mode(cx: &mut App) {
     .detach();
 }
 
+/// Persist the SQL editor's Vim-mode preference (editor preference in the
+/// settings table) and publish it into the global state.
+pub fn save_vim_mode(on: bool, cx: &mut App) {
+    cx.update_global::<AppState, _>(|state, _cx| {
+        state.vim_mode = on;
+        state.status_message = format!(
+            "Vim mode {}",
+            if on { "enabled" } else { "disabled" }
+        );
+    });
+    cx.spawn(async move |_cx| {
+        if let Ok(store) = AppStore::singleton().await {
+            let _ = dbstudio_storage::settings::set_setting_bool(
+                store.pool(),
+                "app.vim_mode",
+                on,
+            )
+            .await;
+        }
+    })
+    .detach();
+}
+
 /// Persist the AI provider configuration (settings table + OS keyring) and
 /// publish it back into the global state for the AI panel.
 pub fn save_ai_config(config: LlmConfig, cx: &mut App) {

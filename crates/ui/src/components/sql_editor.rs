@@ -12,10 +12,12 @@ use gpui_component::{
     select::{Select, SelectEvent, SelectState},
     v_flex,
 };
+use dbstudio_core::ai::{ChatMessage, Role, provider_for};
 use lsp_types::{CompletionItem, CompletionItemKind};
 use std::rc::Rc;
 
 use crate::components::sql_completion::SqlCompletionProvider;
+use crate::components::vim::{VimBuf, VimMode};
 use crate::state::{AppState, select_database};
 use crate::utils::toolbar_divider;
 
@@ -34,6 +36,9 @@ pub struct Editor {
     /// The session id whose editor buffer is currently loaded, used to detect
     /// tab switches so per-session buffers are swapped in/out.
     current_session_id: Option<u64>,
+    /// Whether Vim-style key handling is active for the editor.
+    vim_on: bool,
+    vim: VimBuf,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,6 +98,7 @@ impl Editor {
             .detach();
 
         let state = cx.global::<AppState>();
+        let vim_on = state.vim_mode;
         Self {
             input_state,
             provider,
@@ -100,6 +106,8 @@ impl Editor {
             is_executing: state.is_executing(),
             active_connection: state.active_connection_name().cloned(),
             current_session_id: state.active_session,
+            vim_on,
+            vim: VimBuf::default(),
             _subscriptions,
         }
     }
@@ -324,6 +332,127 @@ impl Editor {
         crate::state::disconnect(cx);
     }
 
+    /// Ask the configured LLM to continue the SQL at the cursor and insert the
+    /// suggested text inline (the plan's 4g "光标处 Tab 触发" inline completion).
+    pub fn ai_complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = cx.global::<AppState>().ai_config.clone();
+        let provider = provider_for(&config);
+        if !provider.is_configured() {
+            return;
+        }
+
+        let state = self.input_state.read(cx);
+        let full_text = state.value().to_string();
+        let cursor = state.selected_range().start.min(full_text.len());
+        let schemas = cx.global::<AppState>().table_schemas();
+        let mut schema_ctx = String::new();
+        for (_key, s) in schemas.iter().take(10) {
+            let columns: Vec<String> = s
+                .columns
+                .iter()
+                .map(|c| format!("{} {}", c.name, c.data_type))
+                .collect();
+            schema_ctx.push_str(&format!("TABLE {} ({})\n", s.table_name, columns.join(", ")));
+        }
+        let prefix = &full_text[..cursor];
+        let user_prompt = format!(
+            "Schema:\n{}\n\nSQL buffer up to the cursor:\n```sql\n{}\n```\n\n\
+             Continue this SQL statement. Output ONLY the characters to insert at the cursor \
+             position to complete the statement naturally. No explanations, no markdown fences.",
+            if schema_ctx.trim().is_empty() { "No schema loaded." } else { schema_ctx.trim_end() },
+            prefix
+        );
+
+        let input_weak = self.input_state.downgrade();
+        cx.spawn_in(window, async move |_this, cx| {
+            let outcome = provider
+                .chat(&[
+                    ChatMessage {
+                        role: Role::System,
+                        content: "You are an inline SQL autocompletion engine. Given the schema \
+                                  and the SQL written so far, reply with ONLY the text to append \
+                                  at the cursor. Never invent table/column names not in the schema."
+                            .to_string(),
+                    },
+                    ChatMessage {
+                        role: Role::User,
+                        content: user_prompt,
+                    },
+                ])
+                .await;
+            let completion = match outcome {
+                Ok(resp) => normalize_ai_completion(&resp.content),
+                Err(_) => return,
+            };
+            if completion.is_empty() {
+                return;
+            }
+            let _ = cx.update(|window, app| {
+                if let Some(handle) = input_weak.upgrade() {
+                    handle.update(app, |state, ecx| {
+                        state.insert(SharedString::from(completion), window, ecx);
+                        ecx.notify();
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Toggle Vim key handling for the editor and persist the preference.
+    pub fn toggle_vim(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.vim_on = !self.vim_on;
+        if !self.vim_on {
+            self.vim.reset();
+            self.vim.mode = VimMode::Normal;
+        }
+        crate::state::save_vim_mode(self.vim_on, cx);
+        cx.notify();
+    }
+
+    /// Route a raw key event through the Vim state machine. Returns `true` when
+    /// the key was consumed (caller must stop propagation so the native editor
+    /// never sees it).
+    fn vim_handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if event.is_held {
+            return true;
+        }
+        let modifiers = event.keystroke.modifiers;
+        let key = event.keystroke.key.to_lowercase();
+        let ctrl = modifiers.control;
+        let shift = modifiers.shift;
+        let alt = modifiers.alt;
+
+        {
+            let state = self.input_state.read(cx);
+            let text = state.value().to_string();
+            let caret = state.selected_range().start;
+            self.vim.sync(&text, caret);
+        }
+
+        let Some(step) = self.vim.step(&key, ctrl, shift, alt) else {
+            // Pass through to the native editor (insert-mode typing, etc.).
+            return false;
+        };
+
+        let entity = self.input_state.clone();
+        cx.update_entity(&entity, |i, cx| {
+            if let Some(text) = &step.text {
+                i.set_value(SharedString::from(text.clone()), window, cx);
+            }
+            match step.selection {
+                Some((lo, hi)) if lo < hi => i.set_selected_range(lo..hi, cx),
+                _ => i.set_selected_range(step.caret.min(i.value().len())..step.caret.min(i.value().len()), cx),
+            }
+            if step.to_insert {
+                i.focus(window, cx);
+                cx.notify();
+            }
+        });
+        cx.notify();
+        true
+    }
+
     pub fn set_query(&mut self, query: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
         let query = query.into();
         cx.update_entity(&self.input_state, |i, cx| {
@@ -370,6 +499,31 @@ impl Render for Editor {
                     let name = format!("Query {}", chrono::Local::now().format("%H:%M:%S"));
                     crate::state::save_favorite(&name, &sql, cx);
                 }
+            }));
+
+        let ai_configured = provider_for(&cx.global::<AppState>().ai_config).is_configured();
+        let ai_complete_button = Button::new("editor-ai-complete")
+            .icon(Icon::empty().path("icons/sparkles.svg"))
+            .small()
+            .ghost()
+            .tooltip("AI 补全：用已配置模型续写光标处 SQL")
+            .disabled(!has_connection || !ai_configured)
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.ai_complete(window, cx);
+            }));
+
+        let vim_button = Button::new("editor-vim")
+            .label("Vim")
+            .small()
+            .ghost()
+            .toggled(self.vim_on)
+            .tooltip(if self.vim_on {
+                "Vim 模式：ON — Esc 回到 Normal，i/a/o 进入插入"
+            } else {
+                "Vim 模式：OFF"
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.toggle_vim(window, cx);
             }));
 
         let execute_button = Button::new("editor-execute")
@@ -421,7 +575,9 @@ impl Render for Editor {
                     .gap_1()
                     .child(format_button)
                     .child(comment_button)
+                    .child(vim_button)
                     .child(favorite_button)
+                    .child(ai_complete_button)
                     .child(execute_button)
                     .child(toolbar_divider(cx))
                     .child(disconnect_button),
@@ -437,6 +593,15 @@ impl Render for Editor {
                     }
                 },
             ))
+            .when(self.vim_on, |this| {
+                this.capture_key_down(cx.listener(
+                    |this, event: &KeyDownEvent, window, cx| {
+                        if this.vim_handle_key(event, window, cx) {
+                            cx.stop_propagation();
+                        }
+                    },
+                ))
+            })
             .size_full()
             .child(toolbar)
             .child(
@@ -454,6 +619,27 @@ impl Render for Editor {
                             .rounded(cx.theme().radius),
                     ),
             )
+    }
+}
+
+/// Trim surrounding whitespace and strip ```sql ... ``` fences from an LLM
+/// completion payload before splicing it into the buffer.
+fn normalize_ai_completion(content: &str) -> String {
+    let trimmed = content.trim();
+    let stripped = if trimmed.starts_with("```") {
+        let body = trimmed
+            .trim_start_matches('`')
+            .strip_prefix("sql")
+            .unwrap_or("");
+        body.trim_end_matches('`').trim()
+    } else {
+        trimmed
+    };
+    // Also drop a leading "sql" token that gpt-style completions sometimes emit.
+    if let Some(body) = stripped.strip_prefix("sql ") {
+        body.trim().to_string()
+    } else {
+        stripped.to_string()
     }
 }
 

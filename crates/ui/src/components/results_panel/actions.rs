@@ -362,6 +362,43 @@ impl ResultsPanel {
         cx.notify();
     }
 
+    /// Apply a single pending edit, leaving the remaining edits queued.
+    pub fn apply_pending(&mut self, index: usize, cx: &mut Context<Self>) {
+        let removed = cx.update_global::<AppState, _>(|state, _cx| {
+            match state.active_session_mut() {
+                Some(s) => {
+                    if index < s.pending_edits.len() {
+                        let removed = s.pending_edits.remove(index);
+                        s.undo_stack.push(crate::state::guard::EditRecord {
+                            forward_sql: removed.sql.clone(),
+                            inverse_sql: removed.inverse_sql.clone(),
+                            label: removed.label.clone(),
+                        });
+                        s.redo_stack.clear();
+                        Some(removed)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        });
+        let Some(edit) = removed else {
+            return;
+        };
+        crate::state::execute_raw_query(edit.sql, cx);
+        let empty = cx.update_global::<AppState, _>(|state, _cx| {
+            state
+                .active_session()
+                .map(|s| s.pending_edits.is_empty())
+                .unwrap_or(true)
+        });
+        if empty {
+            self.show_review_modal = false;
+        }
+        cx.notify();
+    }
+
     /// Discard all pending edits.
     pub fn discard_all_pending(&mut self, cx: &mut Context<Self>) {
         cx.update_global::<AppState, _>(|state, _cx| {
