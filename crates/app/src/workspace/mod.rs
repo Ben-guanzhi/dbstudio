@@ -9,7 +9,7 @@ use dbstudio_ui::components::connection_form::{ConnectionForm, ConnectionFormEve
 use dbstudio_ui::components::connection_list::{ConnectionList, ConnectionListEvent};
 use dbstudio_ui::components::footer_bar::{FooterBar, FooterEvent};
 use dbstudio_ui::components::header_bar::{HeaderBar, HeaderEvent};
-use dbstudio_ui::components::history_panel::HistoryPanel;
+use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
 use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
@@ -292,6 +292,20 @@ impl Workspace {
         }
     }
 
+    fn on_history_event(
+        &mut self,
+        _: &Entity<HistoryPanel>,
+        event: &HistoryPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let HistoryPanelEvent::LoadSql(sql) = event;
+        let sql = sql.clone();
+        dbstudio_ui::state::set_active_editor_text(&sql, self.window_id, cx);
+        self.editor
+            .update(cx, |this, cx| this.set_query(sql, window, cx));
+    }
+
     pub fn open_command_palette(&mut self, cx: &mut Context<Self>) {
         self.command_palette.update(cx, |palette, cx| {
             palette.open(cx);
@@ -361,6 +375,8 @@ impl Workspace {
         cx.subscribe_in(&command_palette, window, Self::on_command_palette_event)
             .detach();
         cx.subscribe_in(&footer, window, Self::on_footer_event)
+            .detach();
+        cx.subscribe_in(&history, window, Self::on_history_event)
             .detach();
 
         let window_id = window.window_handle().window_id().as_u64();

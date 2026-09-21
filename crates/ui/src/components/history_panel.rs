@@ -1,19 +1,13 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Disableable as _,
-    Icon,
-    IconName,
-    Selectable as _,
-    Sizable as _,
-    StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
     list::ListItem,
     scroll::ScrollableElement as _,
-    v_flex,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -26,6 +20,12 @@ enum HistoryTab {
     Favorites,
 }
 
+#[derive(Debug, Clone)]
+pub enum HistoryPanelEvent {
+    /// Load the given SQL into the workspace editor.
+    LoadSql(String),
+}
+
 pub struct HistoryPanel {
     history: Vec<QueryHistoryEntry>,
     favorites: Vec<crate::state::FavoriteEntry>,
@@ -34,6 +34,8 @@ pub struct HistoryPanel {
     search_text: String,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<HistoryPanelEvent> for HistoryPanel {}
 
 impl HistoryPanel {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
@@ -54,12 +56,16 @@ impl HistoryPanel {
                 this.favorites = state.favorites.clone();
                 cx.notify();
             }),
-            cx.subscribe_in(&search_state, window, |this, _, event: &InputEvent, _window, cx| {
-                if let InputEvent::Change = event {
-                    this.search_text = this.search_state.read(cx).value().to_string();
-                    cx.notify();
-                }
-            }),
+            cx.subscribe_in(
+                &search_state,
+                window,
+                |this, _, event: &InputEvent, _window, cx| {
+                    if let InputEvent::Change = event {
+                        this.search_text = this.search_state.read(cx).value().to_string();
+                        cx.notify();
+                    }
+                },
+            ),
         ];
 
         Self {
@@ -190,6 +196,7 @@ impl Render for HistoryPanel {
                     .px_1()
                     .children(filtered.into_iter().enumerate().map(|(ix, entry)| {
                         let sql_preview = truncate_str(&entry.sql, 60);
+                        let sql = entry.sql.clone();
 
                         let status_color = if entry.is_error {
                             gpui::red()
@@ -212,6 +219,9 @@ impl Render for HistoryPanel {
                             .rounded(cx.theme().radius)
                             .cursor_pointer()
                             .hover(|this| this.bg(cx.theme().list_hover))
+                            .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+                                cx.emit(HistoryPanelEvent::LoadSql(sql.clone()));
+                            }))
                             .child(
                                 v_flex()
                                     .gap_0p5()
@@ -225,9 +235,12 @@ impl Render for HistoryPanel {
                                                     .text_color(status_color),
                                             )
                                             .child(
-                                                Label::new(format!("{} ms", entry.execution_time_ms))
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground),
+                                                Label::new(format!(
+                                                    "{} ms",
+                                                    entry.execution_time_ms
+                                                ))
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground),
                                             )
                                             .child(
                                                 Label::new(&entry.executed_at)
@@ -277,6 +290,7 @@ impl Render for HistoryPanel {
                     .px_1()
                     .children(filtered.into_iter().enumerate().map(|(ix, entry)| {
                         let sql_preview = truncate_str(&entry.sql, 60);
+                        let sql = entry.sql.clone();
 
                         ListItem::new(ix)
                             .w_full()
@@ -285,12 +299,8 @@ impl Render for HistoryPanel {
                             .rounded(cx.theme().radius)
                             .cursor_pointer()
                             .hover(|this| this.bg(cx.theme().list_hover))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _window, _cx| {
-                                // Load this favorite into the editor
-                                let sql = this.favorites.get(ix).map(|f| f.sql.clone());
-                                if let Some(_sql) = sql {
-                                    // TODO: Load into editor
-                                }
+                            .on_click(cx.listener(move |_this, _: &ClickEvent, _window, cx| {
+                                cx.emit(HistoryPanelEvent::LoadSql(sql.clone()));
                             }))
                             .child(
                                 v_flex()
@@ -318,14 +328,11 @@ impl Render for HistoryPanel {
             .child(tab_bar)
             .child(search_bar)
             .child(
-                h_flex()
-                    .px_2()
-                    .py_0p5()
-                    .child(
-                        Label::new(count_label)
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
+                h_flex().px_2().py_0p5().child(
+                    Label::new(count_label)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground),
+                ),
             )
             .child(list)
     }
