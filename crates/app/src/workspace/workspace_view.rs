@@ -90,6 +90,7 @@ impl Workspace {
             .size_full()
             .bg(cx.theme().background)
             .child(self.header.clone())
+            .child(self.tabs.clone())
             .when(has_pending, |this| {
                 if let Some((sql, kind_label)) = pending_display {
                     this.child(

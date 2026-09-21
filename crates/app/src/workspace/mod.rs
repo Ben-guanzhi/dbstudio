@@ -13,6 +13,7 @@ use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
 use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
+use dbstudio_ui::components::tabs::{TabsBar, TabsEvent};
 use dbstudio_ui::state::{
     connect, delete_connection, execute_query, export_database, import_database, load_table_schema,
     select_database, AppState, ConnectionStatus,
@@ -33,6 +34,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Workspace {
     window_id: u64,
     header: Entity<HeaderBar>,
+    tabs: Entity<TabsBar>,
     connections: Entity<ConnectionList>,
     tables: Entity<TablesTree>,
     editor: Entity<Editor>,
@@ -292,6 +294,33 @@ impl Workspace {
         }
     }
 
+    fn on_tabs_event(
+        &mut self,
+        _: &Entity<TabsBar>,
+        event: &TabsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TabsEvent::Select(id) => {
+                dbstudio_ui::state::switch_session(*id, self.window_id, cx);
+            }
+            TabsEvent::Close(id) => {
+                dbstudio_ui::state::close_session(*id, cx);
+            }
+            TabsEvent::NewTab => {
+                if self.is_active {
+                    if !self.show_form {
+                        self.open_form(None, window, cx);
+                    }
+                } else if !self.inline_form {
+                    self.open_home_form(None, window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
     fn on_history_event(
         &mut self,
         _: &Entity<HistoryPanel>,
@@ -355,6 +384,7 @@ impl Workspace {
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let header = HeaderBar::view(window, cx);
+        let tabs = TabsBar::view(window, cx);
         let connections = ConnectionList::view(window, cx);
         let tables = TablesTree::view(window, cx);
         let editor = Editor::view(window, cx);
@@ -366,6 +396,7 @@ impl Workspace {
 
         cx.subscribe_in(&header, window, Self::on_header_event)
             .detach();
+        cx.subscribe_in(&tabs, window, Self::on_tabs_event).detach();
         cx.subscribe_in(&connections, window, Self::on_connection_event)
             .detach();
         cx.subscribe_in(&tables, window, Self::on_tables_event)
@@ -398,6 +429,7 @@ impl Workspace {
         Self {
             window_id,
             header,
+            tabs,
             connections,
             tables,
             editor,

@@ -198,6 +198,7 @@ impl Workspace {
                     )
                     .child(window_control_buttons(cx)),
             )
+            .child(self.tabs.clone())
             .child(
                 h_flex()
                     .id("home-content")
