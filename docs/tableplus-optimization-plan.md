@@ -6,7 +6,12 @@
 > **可行性前提**：已核实 `gpui-base`(0.6.1) 的 `EditorState` 暴露了
 > `selected_range()/set_selected_range()/undo()/redo()/set_value()/set_highlighter()`
 > 等 API，因此**选区执行、撤销/重做、格式化回填**均可行。
-> 但当前 gpui-component 编辑器**无 Vim 模式、无多光标、无 AI 能力**（需自研或换组件，标记为"大工程"）。
+> 此外 `InputBaseState` 内置多光标动作与手势：Windows 下 `Ctrl-Alt-Up/Down`
+> 添加光标上/下（macOS `Cmd-Alt`）、`Alt+Click` 追加光标、`Alt+Shift+Click` 列块，
+> 故**多光标原生可用**；仅 `selections`/`CursorSelection` 为 `pub(super)`，
+> 编程侧批量下光标不可用（不影响用户侧）。
+> 当前 Vim 模式**已自研实现**（`crates/ui/src/components/vim.rs`，含 Visual 块
+> 作为补充），AI 行内补全、Review 逐条 Apply、编辑器偏好持久化亦已落地。
 
 ---
 
@@ -23,7 +28,7 @@
 | 命令面板 / 快速跳转（Cmd-K） | ✅ | ❌ | P2 | ✅ |
 | 查询历史全文搜索 | ✅ | ❌ 仅列表 | P2 | ✅ |
 | 连接分组 / 标签（组织连接） | ✅ | ❌ | P2 | ✅ |
-| SQL 编辑器：Vim 模式 / 多光标 | ✅（TablePro） | ❌ | P2 | ⚠️ 需自研，大工程 |
+| SQL 编辑器：Vim 模式 / 多光标 | ✅（TablePro） | ⚠️ Vim 已实现；多光标原生可用 | P2 | ✅ Vim 自研完成；多光标原生 |
 | AI：聊天 / 行内建议 / Explain/Optimize | ✅（TablePro） | ❌ | P2 | ⚠️ 需接 LLM API |
 | MCP 服务器 / URL scheme | ✅（TablePro） | ❌ | P3 | ⚠️ 大工程，架构级 |
 | 插件系统（用户自写驱动） | ✅（TablePro） | ❌（5 种内置） | P3 | ⚠️ 大工程 |
@@ -40,8 +45,8 @@
 | `undo()` / `redo()` | ✅ | 阶段 2 数据网格撤销/重做 |
 | `value()` / `set_value()` | ✅ | 阶段 4c 格式化回填、收藏加载 |
 | `set_highlighter()` | ✅ | 语法主题 |
-| Vim 模式 | ❌ | 需自研（低成本替代：补常用的 Emacs 式编辑快捷键） |
-| 多光标 | ❌ | 需自研，暂缓 |
+| Vim 模式 | ⚠️ 自研已完成 | `crates/ui/src/components/vim.rs`，Normal/Insert/VisualChar/VisualLine/VisualBlock，接线 + 单测 |
+| 多光标 | ✅ 原生 | `InputBaseState` 内置：Ctrl-Alt-Up/Down 加光标、Alt+Click 追加、Alt+Shift+Click 列块；`selections` 为 `pub(super)`，编程侧不可批量设置 |
 | AI 补全 | ❌ | 需接第三方 LLM 或 LSP |
 
 ---
@@ -236,13 +241,13 @@ TablePlus 可按列类型给过滤条件。在 `results_panel` 顶部加过滤�
 ### 4e. 流式结果（可选）
 - `MAX_RESULT_ROWS = 10_000` 已截断。先做"加载更多"按钮（截断时追加 `LIMIT/OFFSET` 合并），低成本近似流式。
 
-### 4f. 低成本编辑增强（替代昂贵 Vim/多光标）
-- **Vim/多光标（TablePro 差异点，大工程）暂缓**，先补低成本项：
-  - 注释/取消注释 `Cmd-/`（选中行首加 `--`）。
-  - 行重复 / 移动到上/下（`Alt-Shift-上下`）。
-  - 自动补全括号/引号（复用 `gpui-base` 现有 AutoClosingPair）。
-  - 语法主题切换（复用 `set_highlighter` / 主题配置）。
-- 若确需 Vim：封装 `keymap: HashMap<KeyBinding, VimAction>` 在 input 层转发，单文件改造，作为独立 P2.5 评估。
+### 4f. 低成本编辑增强（Vim 已实现；多光标原生可用）
+- **Vim 模式**（TablePro 差异点）**已自研完成**：`crates/ui/src/components/vim.rs` 纯逻辑 + 工具栏开关 + 持久化 + 11 项单测。
+- **多光标**（TablePro 差异点）**原生可用**，无需自研：
+  - `Ctrl-Alt-Up / Ctrl-Alt-Down`（macOS `Cmd-Alt`）添加光标到上/下一行；
+  - `Alt+Click` 追加光标，`Alt+Shift+Click` 列/块选择（多行）；
+  - 限制：`selections`/`CursorSelection` 为 `pub(super)`，编程侧无法批量写光标（用户侧不受影响）。
+- 已落地：注释/取消注释 `Ctrl-/`、行重复/上移下移（`Shift-Alt-上下`）、括号自动闭合（gpui-base AutoClosingPair）、语法主题。
 
 ### 4g. AI 聊天 / 行内建议 / Explain（TablePro 差异点，可选）
 - 采用**可插拔 Provider trait**（避免 vendor 锁定）：
