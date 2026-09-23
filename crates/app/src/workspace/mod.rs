@@ -1,5 +1,5 @@
 use crate::{
-    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, RedoLastEdit,
+    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, RedoLastEdit, ShowHelp,
     ToggleAiPanel, ToggleComment, UndoLastEdit,
 };
 use dbstudio_storage::types::ConnectionInfo;
@@ -9,6 +9,7 @@ use dbstudio_ui::components::connection_form::{ConnectionForm, ConnectionFormEve
 use dbstudio_ui::components::connection_list::{ConnectionList, ConnectionListEvent};
 use dbstudio_ui::components::footer_bar::{FooterBar, FooterEvent};
 use dbstudio_ui::components::header_bar::{HeaderBar, HeaderEvent};
+use dbstudio_ui::components::help_modal::HelpModal;
 use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
@@ -47,6 +48,7 @@ pub struct Workspace {
     ai_panel: Entity<AiPanel>,
     footer: Entity<FooterBar>,
     command_palette: Entity<CommandPalette>,
+    help_modal: Entity<HelpModal>,
     selected_connection: Option<ConnectionInfo>,
     inline_form: bool,
     show_form: bool,
@@ -306,6 +308,9 @@ impl Workspace {
                 "export-json" => {
                     self.results.update(cx, |this, cx| this.export_json(cx));
                 }
+                "show-help" => {
+                    self.help_modal.update(cx, |modal, cx| modal.open(cx));
+                }
                 _ => {}
             },
             CommandPaletteEvent::Close => {
@@ -482,6 +487,7 @@ impl Workspace {
         let ai_panel = AiPanel::view(window, cx);
         let footer = FooterBar::view(window, cx);
         let command_palette = CommandPalette::view(window, cx);
+        let help_modal = HelpModal::view(cx);
 
         cx.subscribe_in(&header, window, Self::on_header_event)
             .detach();
@@ -528,6 +534,7 @@ impl Workspace {
             ai_panel,
             footer,
             command_palette,
+            help_modal,
             selected_connection: None,
             inline_form: false,
             show_form: false,
@@ -655,10 +662,15 @@ impl Render for Workspace {
             }
         }
 
-        root = root.child(self.command_palette.clone());
+        root = root
+            .child(self.command_palette.clone())
+            .child(self.help_modal.clone());
 
         root.on_action(cx.listener(|this, _: &OpenCommandPalette, _window, cx| {
             this.open_command_palette(cx);
+        }))
+        .on_action(cx.listener(|this, _: &ShowHelp, _window, cx| {
+            this.help_modal.update(cx, |modal, cx| modal.toggle(cx));
         }))
         .on_action(cx.listener(|this, _: &FormatSql, window, cx| {
             this.editor.update(cx, |editor, cx| {

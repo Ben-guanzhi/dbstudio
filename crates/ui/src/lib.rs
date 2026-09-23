@@ -8,16 +8,38 @@ pub mod utils;
 
 #[cfg(test)]
 mod filter_tests {
+    use crate::components::results_panel::{
+        cell_matches_filter, like_match, operators_for, FilterOp,
+    };
     use dbstudio_core::result::{CellType, ResultCell};
-    use crate::components::results_panel::{cell_matches_filter, like_match, operators_for, FilterOp};
 
     #[test]
     fn equality_and_contains_are_case_insensitive() {
-        assert!(cell_matches_filter(Some(&ResultCell::text("Alice")), FilterOp::Equals, "alice"));
-        assert!(!cell_matches_filter(Some(&ResultCell::text("Alice")), FilterOp::Equals, "bob"));
-        assert!(cell_matches_filter(Some(&ResultCell::text("Hello World")), FilterOp::Contains, "WORLD"));
-        assert!(!cell_matches_filter(Some(&ResultCell::text("Hello World")), FilterOp::Contains, "foo"));
-        assert!(cell_matches_filter(Some(&ResultCell::text("Hello World")), FilterOp::StartsWith, "hello"));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::text("Alice")),
+            FilterOp::Equals,
+            "alice"
+        ));
+        assert!(!cell_matches_filter(
+            Some(&ResultCell::text("Alice")),
+            FilterOp::Equals,
+            "bob"
+        ));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::text("Hello World")),
+            FilterOp::Contains,
+            "WORLD"
+        ));
+        assert!(!cell_matches_filter(
+            Some(&ResultCell::text("Hello World")),
+            FilterOp::Contains,
+            "foo"
+        ));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::text("Hello World")),
+            FilterOp::StartsWith,
+            "hello"
+        ));
     }
 
     #[test]
@@ -42,13 +64,33 @@ mod filter_tests {
 
     #[test]
     fn numeric_operators_use_sort_proxy() {
-        assert!(cell_matches_filter(Some(&ResultCell::integer(10)), FilterOp::GreaterThan, "5"));
-        assert!(cell_matches_filter(Some(&ResultCell::integer(10)), FilterOp::LessThan, "11"));
-        assert!(!cell_matches_filter(Some(&ResultCell::float(1.5)), FilterOp::GreaterThan, "2"));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::integer(10)),
+            FilterOp::GreaterThan,
+            "5"
+        ));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::integer(10)),
+            FilterOp::LessThan,
+            "11"
+        ));
+        assert!(!cell_matches_filter(
+            Some(&ResultCell::float(1.5)),
+            FilterOp::GreaterThan,
+            "2"
+        ));
         // A non-numeric expected value falls back to a substring match.
-        assert!(cell_matches_filter(Some(&ResultCell::text("x10y")), FilterOp::GreaterThan, "10y"));
+        assert!(cell_matches_filter(
+            Some(&ResultCell::text("x10y")),
+            FilterOp::GreaterThan,
+            "10y"
+        ));
         // Numeric ops against non-numeric cells with numeric values match nothing.
-        assert!(!cell_matches_filter(Some(&ResultCell::text("x10y")), FilterOp::GreaterThan, "10"));
+        assert!(!cell_matches_filter(
+            Some(&ResultCell::text("x10y")),
+            FilterOp::GreaterThan,
+            "10"
+        ));
     }
 
     #[test]
@@ -64,12 +106,16 @@ mod filter_tests {
 
 #[cfg(test)]
 mod pagination_tests {
-    use dbstudio_core::models::DatabaseType;
     use crate::state::operations::paginate_query;
+    use dbstudio_core::models::DatabaseType;
 
     #[test]
     fn simple_dialects_use_limit_offset() {
-        for db in [DatabaseType::SQLite, DatabaseType::MySQL, DatabaseType::PostgreSQL] {
+        for db in [
+            DatabaseType::SQLite,
+            DatabaseType::MySQL,
+            DatabaseType::PostgreSQL,
+        ] {
             assert_eq!(
                 paginate_query("SELECT * FROM t ORDER BY id", 100, 200, db),
                 "SELECT * FROM ( SELECT * FROM t ORDER BY id ) AS _dbstudio_sub LIMIT 100 OFFSET 200"
@@ -104,22 +150,46 @@ mod pagination_tests {
 
 #[cfg(test)]
 mod guard_tests {
+    use crate::state::guard::{classify_sql, requires_confirmation, WriteKind};
     use dbstudio_core::models::Environment;
-    use crate::state::guard::{WriteKind, classify_sql, requires_confirmation};
 
     #[test]
     fn classifies_common_statements() {
         assert_eq!(classify_sql("  SELECT * FROM t"), Some(WriteKind::Select));
-        assert_eq!(classify_sql("select id from users"), Some(WriteKind::Select));
-        assert_eq!(classify_sql("INSERT INTO t VALUES (1)"), Some(WriteKind::Insert));
-        assert_eq!(classify_sql("UPDATE t SET a = 1 WHERE id = 2"), Some(WriteKind::Update));
-        assert_eq!(classify_sql("UPDATE t SET a = 1"), Some(WriteKind::UpdateNoWhere));
-        assert_eq!(classify_sql("DELETE FROM t WHERE id = 2"), Some(WriteKind::Delete));
-        assert_eq!(classify_sql("DELETE FROM t"), Some(WriteKind::DeleteNoWhere));
+        assert_eq!(
+            classify_sql("select id from users"),
+            Some(WriteKind::Select)
+        );
+        assert_eq!(
+            classify_sql("INSERT INTO t VALUES (1)"),
+            Some(WriteKind::Insert)
+        );
+        assert_eq!(
+            classify_sql("UPDATE t SET a = 1 WHERE id = 2"),
+            Some(WriteKind::Update)
+        );
+        assert_eq!(
+            classify_sql("UPDATE t SET a = 1"),
+            Some(WriteKind::UpdateNoWhere)
+        );
+        assert_eq!(
+            classify_sql("DELETE FROM t WHERE id = 2"),
+            Some(WriteKind::Delete)
+        );
+        assert_eq!(
+            classify_sql("DELETE FROM t"),
+            Some(WriteKind::DeleteNoWhere)
+        );
         assert_eq!(classify_sql("DROP TABLE t"), Some(WriteKind::Drop));
         assert_eq!(classify_sql("TRUNCATE TABLE t"), Some(WriteKind::Truncate));
-        assert_eq!(classify_sql("ALTER TABLE t ADD COLUMN c INT"), Some(WriteKind::Alter));
-        assert_eq!(classify_sql("CREATE TABLE t (id INT)"), Some(WriteKind::Create));
+        assert_eq!(
+            classify_sql("ALTER TABLE t ADD COLUMN c INT"),
+            Some(WriteKind::Alter)
+        );
+        assert_eq!(
+            classify_sql("CREATE TABLE t (id INT)"),
+            Some(WriteKind::Create)
+        );
         assert_eq!(classify_sql("VACUUM"), Some(WriteKind::OtherDdl));
     }
 
@@ -132,29 +202,85 @@ mod guard_tests {
 
     #[test]
     fn safe_mode_confirms_every_write() {
-        assert!(requires_confirmation(Some(WriteKind::Insert), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::Update), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::UpdateNoWhere), Environment::Staging, true));
-        assert!(requires_confirmation(Some(WriteKind::Delete), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::DeleteNoWhere), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::Drop), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::Alter), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::Create), Environment::Dev, true));
-        assert!(requires_confirmation(Some(WriteKind::OtherDdl), Environment::Dev, true));
-        assert!(!requires_confirmation(Some(WriteKind::Select), Environment::Dev, true));
-        assert!(!requires_confirmation(Some(WriteKind::Select), Environment::Production, true));
+        assert!(requires_confirmation(
+            Some(WriteKind::Insert),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::Update),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::UpdateNoWhere),
+            Environment::Staging,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::Delete),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::DeleteNoWhere),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::Drop),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::Alter),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::Create),
+            Environment::Dev,
+            true
+        ));
+        assert!(requires_confirmation(
+            Some(WriteKind::OtherDdl),
+            Environment::Dev,
+            true
+        ));
+        assert!(!requires_confirmation(
+            Some(WriteKind::Select),
+            Environment::Dev,
+            true
+        ));
+        assert!(!requires_confirmation(
+            Some(WriteKind::Select),
+            Environment::Production,
+            true
+        ));
     }
 
     #[test]
     fn without_safe_mode_environments_apply() {
-        assert!(!requires_confirmation(Some(WriteKind::Update), Environment::Dev, false));
-        assert!(!requires_confirmation(Some(WriteKind::Delete), Environment::Staging, false));
+        assert!(!requires_confirmation(
+            Some(WriteKind::Update),
+            Environment::Dev,
+            false
+        ));
+        assert!(!requires_confirmation(
+            Some(WriteKind::Delete),
+            Environment::Staging,
+            false
+        ));
         assert!(requires_confirmation(
             Some(WriteKind::DeleteNoWhere),
             Environment::Dev,
             false
         ));
-        assert!(requires_confirmation(Some(WriteKind::Insert), Environment::Production, false));
+        assert!(requires_confirmation(
+            Some(WriteKind::Insert),
+            Environment::Production,
+            false
+        ));
         assert!(!requires_confirmation(
             Some(WriteKind::Select),
             Environment::Production,
@@ -298,5 +424,39 @@ mod vim_tests {
         v.caret = 0;
         let step = v.step("J", false, false, false).unwrap();
         assert_eq!(step.text.as_deref(), Some("select * from t"));
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use crate::components::help_modal::HelpModal;
+
+    #[test]
+    fn shortcut_sections_have_non_empty_rows() {
+        let sections = HelpModal::sections();
+        assert!(!sections.is_empty());
+        for (title, rows) in &sections {
+            assert!(!title.trim().is_empty());
+            assert!(!rows.is_empty());
+            for (keys, desc) in rows {
+                assert!(!keys.trim().is_empty());
+                assert!(!desc.trim().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn help_documents_f1_and_quick_open() {
+        let rows: Vec<(String, String)> = HelpModal::sections()
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .collect();
+        assert!(rows.iter().any(|(keys, _)| keys == "F1"));
+        assert!(rows
+            .iter()
+            .any(|(keys, desc)| keys.ends_with("+K") && desc.contains("command palette")));
+        assert!(rows
+            .iter()
+            .any(|(keys, desc)| keys.ends_with("+P") && desc.contains("Quick open")));
     }
 }

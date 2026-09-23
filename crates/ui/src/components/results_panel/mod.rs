@@ -236,8 +236,8 @@ impl ResultsPanel {
 
             let state_result_ptr = state
                 .last_result_for(this.window_id)
-                .map(|r| Arc::as_ptr(r));
-            let current_result_ptr = this.result.as_ref().map(|r| Arc::as_ptr(r));
+                .map(Arc::as_ptr);
+            let current_result_ptr = this.result.as_ref().map(Arc::as_ptr);
             let result_changed = state_result_ptr != current_result_ptr;
 
             let pending_schema = if let Some(ref t) = this.pending_table {

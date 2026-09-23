@@ -25,7 +25,8 @@ actions!(
         RedoLastEdit,
         DuplicateLine,
         MoveLineUp,
-        MoveLineDown
+        MoveLineDown,
+        ShowHelp
     ]
 );
 
@@ -92,6 +93,9 @@ fn main() {
             toggle_color_mode(None, cx);
         });
         cx.on_action(|_: &OpenCommandPalette, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &ShowHelp, _cx| {
             // Handled by workspace via on_action on the root div
         });
         cx.on_action(|_: &FormatSql, _cx| {
