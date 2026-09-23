@@ -12,13 +12,14 @@ use dbstudio_ui::components::header_bar::{HeaderBar, HeaderEvent};
 use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
-use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
+use dbstudio_ui::components::structure_view::StructureView;
+use dbstudio_ui::components::tables_tree::{SelectedTable, TablesEvent, TablesTree};
 use dbstudio_ui::components::tabs::{
     TabClose, TabCloseOthers, TabDuplicateInNewWindow, TabsBar, TabsEvent,
 };
 use dbstudio_ui::state::{
-    connect, delete_connection, execute_query, export_database, import_database, load_table_schema,
-    select_database, AppState, ConnectionStatus,
+    connect, delete_connection, execute_query, export_database, import_database, open_table_object,
+    select_database, set_object_segment, AppState, ConnectionStatus, ObjectSegment,
 };
 use dbstudio_ui::utils::toolbar_divider;
 use gpui::prelude::FluentBuilder as _;
@@ -41,6 +42,7 @@ pub struct Workspace {
     tables: Entity<TablesTree>,
     editor: Entity<Editor>,
     results: Entity<ResultsPanel>,
+    structure: Entity<StructureView>,
     history: Entity<HistoryPanel>,
     ai_panel: Entity<AiPanel>,
     footer: Entity<FooterBar>,
@@ -158,9 +160,55 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let TablesEvent::TableSelected(table) = event;
-        let table = table.clone();
-        load_table_schema(&table.name, table.schema.as_deref(), self.window_id, cx);
+        match event {
+            TablesEvent::TableSelected(table) => {
+                open_table_object(
+                    &table.name,
+                    table.schema.as_deref(),
+                    ObjectSegment::Data,
+                    self.window_id,
+                    cx,
+                );
+                self.show_table_data(table, window, cx);
+            }
+            TablesEvent::OpenObject { table, segment } => {
+                open_table_object(
+                    &table.name,
+                    table.schema.as_deref(),
+                    *segment,
+                    self.window_id,
+                    cx,
+                );
+                match segment {
+                    ObjectSegment::Structure | ObjectSegment::History => {}
+                    ObjectSegment::Data => self.show_table_data(table, window, cx),
+                    ObjectSegment::Query => {
+                        // Seed the editor with a SELECT; the user runs it.
+                        let query = dbstudio_ui::state::build_select_query(
+                            &table.name,
+                            table.schema.as_deref(),
+                            self.window_id,
+                            cx,
+                        );
+                        self.results.update(cx, |this, cx| {
+                            this.select_table(table.name.clone(), None, cx)
+                        });
+                        self.editor
+                            .update(cx, |this, cx| this.set_query(query, window, cx));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Open `table`'s Data view: seed the editor with a SELECT, point the
+    /// results panel at the table, and execute the query.
+    fn show_table_data(
+        &mut self,
+        table: &SelectedTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let query = dbstudio_ui::state::build_select_query(
             &table.name,
             table.schema.as_deref(),
@@ -218,7 +266,13 @@ impl Workspace {
                     .iter()
                     .find(|t| t.name == table)
                     .and_then(|t| t.schema.clone());
-                load_table_schema(&table, schema.as_deref(), self.window_id, cx);
+                open_table_object(
+                    &table,
+                    schema.as_deref(),
+                    ObjectSegment::Data,
+                    self.window_id,
+                    cx,
+                );
                 let query = dbstudio_ui::state::build_select_query(
                     &table,
                     schema.as_deref(),
@@ -423,6 +477,7 @@ impl Workspace {
         let tables = TablesTree::view(window, cx);
         let editor = Editor::view(window, cx);
         let results = ResultsPanel::view(window, cx);
+        let structure = StructureView::view(window, cx);
         let history = HistoryPanel::view(window, cx);
         let ai_panel = AiPanel::view(window, cx);
         let footer = FooterBar::view(window, cx);
@@ -468,6 +523,7 @@ impl Workspace {
             tables,
             editor,
             results,
+            structure,
             history,
             ai_panel,
             footer,

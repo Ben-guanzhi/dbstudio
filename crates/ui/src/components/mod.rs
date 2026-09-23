@@ -8,6 +8,7 @@ pub mod history_panel;
 pub mod results_panel;
 pub mod sql_completion;
 pub mod sql_editor;
+pub mod structure_view;
 pub mod tables_tree;
 pub mod tabs;
 pub mod vim;

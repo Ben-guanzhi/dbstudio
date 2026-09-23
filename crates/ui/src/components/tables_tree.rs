@@ -12,11 +12,12 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     label::Label,
     list::ListItem,
+    menu::PopupMenuItem,
     tree::{TreeEntry, TreeItem, TreeState, tree},
     v_flex,
 };
 
-use crate::state::AppState;
+use crate::state::{AppState, ObjectSegment};
 use crate::utils::truncate_str;
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,11 @@ pub struct SelectedTable {
 
 pub enum TablesEvent {
     TableSelected(SelectedTable),
+    /// Open `table` in one of the center pane's object segments.
+    OpenObject {
+        table: SelectedTable,
+        segment: ObjectSegment,
+    },
 }
 
 impl EventEmitter<TablesEvent> for TablesTree {}
@@ -210,6 +216,53 @@ impl TablesTree {
     }
 }
 
+/// Parse a leaf tree id (`{schema}:{name}:{table_type}`) into its parts.
+///
+/// Schema group ids (`schema:{label}`) and malformed ids return `None`.
+fn parse_table_id(id: &str) -> Option<(String, String, String)> {
+    let parts: Vec<&str> = id.rsplitn(3, ':').collect();
+    match parts.as_slice() {
+        [table_type, name, schema] => Some((
+            schema.to_string(),
+            name.to_string(),
+            table_type.to_string(),
+        )),
+        _ => None,
+    }
+}
+
+/// Quote `schema.name` (either part may be empty) for the active connection.
+fn qualify_table(schema: &str, name: &str, window_id: u64, cx: &App) -> String {
+    if schema.is_empty() {
+        crate::state::quote_ident(name, window_id, cx)
+    } else {
+        format!(
+            "{}.{}",
+            crate::state::quote_ident(schema, window_id, cx),
+            crate::state::quote_ident(name, window_id, cx)
+        )
+    }
+}
+
+/// Build an "Open …" menu item that emits [`TablesEvent::OpenObject`].
+fn open_object_item(
+    view: &Entity<TablesTree>,
+    table: &SelectedTable,
+    segment: ObjectSegment,
+    label: &'static str,
+) -> PopupMenuItem {
+    let view = view.clone();
+    let table = table.clone();
+    PopupMenuItem::new(label).on_click(move |_, _, cx| {
+        view.update(cx, |_, cx| {
+            cx.emit(TablesEvent::OpenObject {
+                table: table.clone(),
+                segment,
+            });
+        });
+    })
+}
+
 fn build_tree_items(tables: &[TableInfo], search: &str) -> Vec<TreeItem> {
     let mut schema_tables: std::collections::BTreeMap<String, Vec<&TableInfo>> = Default::default();
     for t in tables {
@@ -242,6 +295,8 @@ fn build_tree_items(tables: &[TableInfo], search: &str) -> Vec<TreeItem> {
 impl Render for TablesTree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
+        let menu_view = view.clone();
+        let window_id = self.window_id;
 
         let refresh_button = Button::new("tables-refresh")
             .label("Refresh")
@@ -291,7 +346,88 @@ impl Render for TablesTree {
                 .overflow_hidden()
                 .border_1()
                 .border_color(cx.theme().border)
-                .rounded(cx.theme().radius),
+                .rounded(cx.theme().radius)
+                .context_menu(move |_ix, entry, menu, _window, _menu_cx| {
+                    let Some((schema, name, table_type)) =
+                        parse_table_id(entry.item().id.as_ref())
+                    else {
+                        return menu;
+                    };
+                    let table = SelectedTable {
+                        name: name.clone(),
+                        schema: if schema.is_empty() {
+                            None
+                        } else {
+                            Some(schema.clone())
+                        },
+                        table_type: table_type.clone(),
+                    };
+                    let mut menu = menu
+                        .item(open_object_item(
+                            &menu_view,
+                            &table,
+                            ObjectSegment::Data,
+                            "Open Data",
+                        ))
+                        .item(open_object_item(
+                            &menu_view,
+                            &table,
+                            ObjectSegment::Structure,
+                            "Open Structure",
+                        ))
+                        .item(open_object_item(
+                            &menu_view,
+                            &table,
+                            ObjectSegment::Query,
+                            "Open Query",
+                        ))
+                        .separator()
+                        .item({
+                            let name = name.clone();
+                            PopupMenuItem::new("Copy Name").on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                            })
+                        })
+                        .item(PopupMenuItem::new("Refresh").on_click(move |_, _, cx| {
+                            crate::state::refresh_tables(window_id, cx);
+                        }));
+                    // Destructive actions: base tables only, routed through
+                    // execute_query so safe-mode + confirmation still apply.
+                    if table_type == "table" || table_type.eq_ignore_ascii_case("BASE TABLE") {
+                        let t_schema = schema.clone();
+                        let t_name = name.clone();
+                        let d_schema = schema;
+                        let d_name = name;
+                        menu = menu
+                            .separator()
+                            .item(PopupMenuItem::new("Truncate").on_click(
+                                move |_, _, cx| {
+                                    let target =
+                                        qualify_table(&t_schema, &t_name, window_id, cx);
+                                    let is_sqlite = cx
+                                        .global::<AppState>()
+                                        .active_connection_for(window_id)
+                                        .map(|c| c.db_type())
+                                        == Some(dbstudio_core::models::DatabaseType::SQLite);
+                                    let sql = if is_sqlite {
+                                        format!("DELETE FROM {target};")
+                                    } else {
+                                        format!("TRUNCATE TABLE {target};")
+                                    };
+                                    crate::state::execute_query(sql, window_id, cx);
+                                },
+                            ))
+                            .item(PopupMenuItem::new("Drop").on_click(move |_, _, cx| {
+                                let target = qualify_table(&d_schema, &d_name, window_id, cx);
+                                crate::state::execute_query(
+                                    format!("DROP TABLE {target};"),
+                                    window_id,
+                                    cx,
+                                );
+                            }));
+                    }
+                    menu
+                }),
             )
     }
 }

@@ -23,7 +23,7 @@ use gpui_component::{
     StyledExt as _,
 };
 
-use crate::state::AppState;
+use crate::state::{AppState, build_result_page_sql, fetch_result_page};
 
 mod actions;
 mod export;
@@ -144,6 +144,22 @@ pub struct ResultsPanel {
     filter_op: FilterOp,
     filter_op_select: Entity<SelectState<Vec<FilterOpOption>>>,
     filter_value_input: Entity<InputState>,
+    /// Server-side page size; the cycle button picks one of these values.
+    page_size: usize,
+    /// Byte/row offset of the current page within the base query.
+    page_offset: usize,
+    /// Accumulated offsets of previous pages (for Back navigation).
+    page_history: Vec<usize>,
+    /// The user's own SELECT before paging/filter wrapping; `None` for
+    /// non-query results (writes, DDL, errors).
+    base_sql: Option<String>,
+    /// SQL of the last page we fetched ourselves, used to distinguish our own
+    /// page fetches from fresh user queries in the result subscription.
+    last_sent_sql: Option<String>,
+    /// The active server-side keyword filter, if any.
+    server_filter: Option<String>,
+    /// Whether the current page fetch indicated more rows may exist.
+    more_pages: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -251,6 +267,20 @@ impl ResultsPanel {
                 match this.result.as_deref() {
                     Some(SqlResult::Query(query)) => {
                         this.active_tab = ResultsTab::Data;
+
+                        // Track server-side paging: our own page fetch advances
+                        // the window; any other query starts a fresh base.
+                        if this.last_sent_sql.as_deref() == Some(query.sql.as_str()) {
+                            this.last_sent_sql = None;
+                            this.more_pages = query.rows.len() >= this.page_size;
+                        } else {
+                            this.base_sql = Some(query.sql.clone());
+                            this.page_offset = 0;
+                            this.page_history.clear();
+                            this.server_filter = None;
+                            this.more_pages = query.truncated;
+                        }
+
                         let query = query.clone();
                         let filter_text = this.filter_text.clone();
                         let column_filters = this.column_filters.clone();
@@ -265,6 +295,15 @@ impl ResultsPanel {
                         this.filter_text.clear();
                         this.column_filters.clear();
                         this.show_filter_composer = false;
+                        this.last_sent_sql = None;
+                        if !matches!(this.result.as_deref(), Some(SqlResult::Error(_))) {
+                            // A write/DDL result replaced the query: drop paging.
+                            this.base_sql = None;
+                            this.page_offset = 0;
+                            this.page_history.clear();
+                            this.server_filter = None;
+                            this.more_pages = false;
+                        }
                         this.table.update(cx, |table, cx| {
                             table.delegate_mut().update(&QueryResult::empty(""));
                             table.delegate_mut().clear_filters();
@@ -295,9 +334,24 @@ impl ResultsPanel {
         )
         .detach();
 
+        let initial_result = cx.global::<AppState>().last_result_for(window_id).cloned();
+        let initial_base = match initial_result.as_deref() {
+            Some(SqlResult::Query(q)) => Some(q.sql.clone()),
+            _ => None,
+        };
+        let initial_more_pages =
+            matches!(initial_result.as_deref(), Some(SqlResult::Query(q)) if q.truncated);
+
         Self {
             window_id,
-            result: cx.global::<AppState>().last_result_for(window_id).cloned(),
+            result: initial_result,
+            base_sql: initial_base,
+            last_sent_sql: None,
+            page_size: 100,
+            page_offset: 0,
+            page_history: Vec::new(),
+            server_filter: None,
+            more_pages: initial_more_pages,
             table,
             selected_schema: None,
             pending_table: None,
@@ -454,6 +508,64 @@ impl ResultsPanel {
         self.column_filters.clear();
         self.apply_column_filters(cx);
         cx.notify();
+    }
+
+    /// Fetch one server-side page of `base_sql` (optionally keyword-filtered)
+    /// and display it. `push` records the current offset for Back navigation.
+    ///
+    /// Clears `last_sent_sql` first so the result subscription can tell this
+    /// fetch apart from a fresh user query.
+    fn fetch_page(&mut self, offset: usize, push: bool, cx: &mut Context<Self>) {
+        let Some(base) = self.base_sql.clone() else {
+            self.status(cx, "No query to page through".to_string());
+            cx.notify();
+            return;
+        };
+        let filter = self.server_filter.clone().unwrap_or_default();
+        let columns: Vec<String> = match self.result.as_deref() {
+            Some(SqlResult::Query(q)) => q.columns.iter().map(|c| c.name.clone()).collect(),
+            _ => Vec::new(),
+        };
+        if push {
+            self.page_history.push(self.page_offset);
+        }
+        self.last_sent_sql = None;
+        let sql = build_result_page_sql(
+            &base,
+            &filter,
+            &columns,
+            offset,
+            self.page_size,
+            self.window_id,
+            cx,
+        );
+        self.last_sent_sql = Some(sql.clone());
+        self.page_offset = offset;
+        fetch_result_page(sql, self.window_id, cx);
+        cx.notify();
+    }
+
+    /// Run `filter_text` as a server-side keyword filter from offset 0.
+    fn apply_server_filter(&mut self, cx: &mut Context<Self>) {
+        if self.base_sql.is_none() {
+            self.status(cx, "No query to filter".to_string());
+            cx.notify();
+            return;
+        }
+        self.server_filter = Some(self.filter_text.trim().to_string());
+        self.page_history.clear();
+        self.fetch_page(0, false, cx);
+    }
+
+    /// Cycle the server-side page size between 100 / 500 / 1000 rows.
+    fn cycle_page_size(&mut self, cx: &mut Context<Self>) {
+        self.page_size = match self.page_size {
+            100 => 500,
+            500 => 1000,
+            _ => 100,
+        };
+        self.page_history.clear();
+        self.fetch_page(0, false, cx);
     }
 
     /// Apply the text filter to the table delegate.
