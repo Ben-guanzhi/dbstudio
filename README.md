@@ -23,10 +23,12 @@
 | `Cmd/Ctrl+N` | 新建窗口 |
 | `Cmd/Ctrl+K` | 打开命令面板 |
 | `Cmd/Ctrl+P` | 快速打开 |
-| `Shift+Cmd+D` | 复制行 |
-| `Alt+↑/↓` | 上移/下移行 |
-| `Ctrl+Z` | 撤销 |
-| `Ctrl+Shift+Z` | 重做 |
+| `Cmd/Ctrl+Shift+D` | 复制行 |
+| `Shift+Alt+↑/↓` | 上移/下移行 |
+| `Cmd/Ctrl+Z` | 撤销 |
+| `Cmd/Ctrl+Shift+Z` | 重做 |
+| `F1` | 显示/隐藏快捷键帮助 |
+| `Cmd/Ctrl+,` | 打开设置 |
 
 ### Vim 模式快捷键
 

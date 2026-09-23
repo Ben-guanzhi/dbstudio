@@ -172,10 +172,7 @@ impl ResultsPanel {
                 }
                 let val = cell_value_str(input.read(cx).value().as_str());
                 let col_q = quote_ident(&col.name, self.window_id, cx);
-                match val {
-                    Some(v) => Some(format!("{} = {}", col_q, quote_string_literal(&v))),
-                    None => None,
-                }
+                val.map(|v| format!("{} = {}", col_q, quote_string_literal(&v)))
             })
             .collect();
 

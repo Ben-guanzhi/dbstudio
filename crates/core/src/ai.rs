@@ -156,7 +156,10 @@ fn endpoint_for(config: &LlmConfig) -> (String, String) {
             "gpt-4o-mini".to_string()
         }
     });
-    (format!("{}/chat/completions", base.trim_end_matches('/')), model)
+    (
+        format!("{}/chat/completions", base.trim_end_matches('/')),
+        model,
+    )
 }
 
 /// Blocking call run on a helper thread; [`OpenAiCompatibleProvider::chat`]
@@ -231,11 +234,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
 /// back to the [`MockProvider`] so the app keeps working un-configured.
 pub fn provider_for(config: &LlmConfig) -> Box<dyn LlmProvider> {
     match config.provider.as_str() {
-        "openai" | "openai-compatible" | "ollama" => {
-            Box::new(OpenAiCompatibleProvider {
-                config: config.clone(),
-            })
-        }
+        "openai" | "openai-compatible" | "ollama" => Box::new(OpenAiCompatibleProvider {
+            config: config.clone(),
+        }),
         _ => Box::new(MockProvider),
     }
 }

@@ -6,6 +6,67 @@
 
 ---
 
+## 交付状态(P1–P3 已完成并提交)
+
+> 本节记录 2026-09 一轮"对象标签页 → Quick Open/帮助 → FK·导出·设置"的落地情况,
+> 以及顺带修复的 CI 门禁。提交哈希对应 `cline/5a463` 分支。
+
+### Phase 1 — 对象标签页 + 树右键菜单 + 服务端分页(`9065dca`)
+
+- **对象标签页**:`ObjectSegment { Data, Structure, Query, History }`(`state/mod.rs`)+ 会话级
+  `active_object/current_object`;新增 `crates/ui/src/components/structure_view.rs`
+  (列 / 索引 / 外键 / DDL 只读检视器),中央面板按段位切换(`workspace_view.rs`)。
+- **表树右键菜单**(`tables_tree.rs`):Open Data / Open Structure / Open Query / Copy Name /
+  Refresh / Truncate / Drop;破坏性操作仍走 `execute_query`,Safe Mode 确认链不变。
+- **服务端过滤 + 分页**(`results_panel`):关键字过滤可下推为 SQL `LIKE`(Search 按钮),
+  分页条含上一页 / 下一页 / 页大小循环(100 / 500 / 1000);自建页请求与用户查询用
+  `last_sent_sql` 区分,避免互相误判。
+- 修复:删除多余 `cx.notify()`、导入与借用问题;`cargo check/test` 全绿后提交。
+
+### Phase 2 — Quick Open 跨平台键位 + F1 帮助(`048f5f8`)
+
+- **键位修复(重要)**:gpui 的 `cmd-` 前缀在 Windows/Linux 解析为 **Win/Super 键**而非 Ctrl
+  (见 `gpui-pre` 的 `keystroke.rs`),原 `cmd-p` 等绑定在 Windows 上实际失效;
+  统一改用 gpui 的 `secondary` 前缀(macOS = Cmd,其他 = Ctrl),并补上 README 一直
+  宣称却从未注册的 `Ctrl+K`。
+- **F1 帮助面板**:新增 `ShowHelp` action + `crates/ui/src/components/help_modal.rs`
+  (General / Editing / Mouse / Vim 分区、键帽 chip、可滚动卡片;F1 切换、点击背板或 X 关闭);
+  命令面板新增 “Keyboard Shortcuts” 条目。
+- 帮助内容由单测守护(`help_tests`):分区/行非空、F1 与 Quick Open 条目必须存在。
+
+### Phase 3 — FK 下拉 + 导出入口 + 设置面板(`160ce6a`)
+
+- **外键单元格下拉**:双击单列外键单元格 → 异步执行
+  `SELECT DISTINCT <ref_col> FROM <ref_table>`(按方言分页限 100 行,逻辑在
+  `state::build_fk_options_sql`)→ 单元格改渲染 `Select`(窗口级 deferred 弹层,不被表格裁剪),
+  选中即写回编辑缓冲并提交 UPDATE;取值空或失败回退文本输入,过期异步结果由 `(行,列)` token 拦截。
+- **导出入口**:表树右键新增 “Export Table… / Export Database…”(原生保存对话框);
+  新增 `state::export_table`(复用 `ExportConfig::tables` 子集)。
+- **设置面板**:`crates/ui/src/components/settings_modal.rs`(顶栏齿轮 / `Cmd/Ctrl+,` / 命令面板
+  “Settings”),主题、Safe Mode、Vim 三个实时开关 + 版本号。
+
+### CI 门禁修复(`2ea4d03`、`90a973c`)
+
+- `origin/main` 的 CI 原本为红:`cargo clippy --workspace -- -D warnings` 有 7 处存量警告
+  (storage/db 直接失败,并阻断依赖它们的 ui/app 检查);`cargo fmt --all -- --check` 有 46 个文件未格式化。
+- `2ea4d03` 等价改写 7 处 clippy 警告;`90a973c` 全量 `cargo fmt`;之后四项门禁本地全绿
+  (check / test / clippy -D warnings / fmt --check)。
+
+### 已知限制与待办
+
+- FK 下拉仅支持**单列**外键,引用表不带 schema 前缀(依赖默认 schema / `search_path`);
+  候选值上限 100 条,无独立搜索框。
+- “Export Table…” 传裸表名:多 schema 同名表场景会导出默认 schema 的那张。
+- 设置面板未纳入默认分页大小(分页大小保留结果面板内的 100/500/1000 循环按钮)。
+- 阶段 A–C 既有条目本次仅**抽样复核**:标签栏规格(36px 带 / 28px 胶囊轨道 / 24px 标签,
+  见 `tabs.rs` 注释)、顶栏信息胶囊、网格交替条纹、NULL 灰斜体、pending-edit 黄色高亮均已确认;
+  **行高常量集中定义**、**Favorites 切换按钮**、**Home 卡片 group/tags badge** 未复核
+  (另:diff 着色实现为 22% 透明度,文档写 30%)。
+- 阶段 D 的**历史搜索下沉 storage**(`history.rs` 增 `search()`)尚未实现,当前仍是
+  历史面板内的内存过滤。
+
+---
+
 ## 设计规范（从 TablePro 实测提取）
 
 ### 布局度量

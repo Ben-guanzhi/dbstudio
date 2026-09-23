@@ -10,7 +10,7 @@ use dbstudio_storage::AppStore;
 use gpui::*;
 
 use super::guard::{classify_sql, requires_confirmation, WriteKind};
-use super::{AppState, ConnectionSession};
+use super::{AppState, ConnectionSession, ObjectSegment};
 
 /// Create a new empty session and make it the active one in `window_id`.
 /// Returns its id.
@@ -244,6 +244,38 @@ pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
         .detach();
     })
     .detach();
+}
+
+/// Switch which object segment (Data/Structure/Query/History) the center pane
+/// of `window_id` shows.
+pub fn set_object_segment(segment: ObjectSegment, window_id: u64, cx: &mut App) {
+    cx.update_global::<AppState, _>(|state, _cx| {
+        if let Some(s) = state.active_session_mut_for(window_id) {
+            s.active_object = segment;
+        }
+    });
+}
+
+/// Open a table object in `segment`: load its schema, remember it as the
+/// session's current object, and switch the center pane to `segment`.
+///
+/// This only touches state; the caller (workspace) drives the editor/results
+/// entities for segments that need a query run.
+pub fn open_table_object(
+    table: &str,
+    schema: Option<&str>,
+    segment: ObjectSegment,
+    window_id: u64,
+    cx: &mut App,
+) {
+    load_table_schema(table, schema, window_id, cx);
+
+    cx.update_global::<AppState, _>(|state, _cx| {
+        if let Some(s) = state.active_session_mut_for(window_id) {
+            s.active_object = segment;
+            s.current_object = Some((table.to_string(), schema.map(|s| s.to_string())));
+        }
+    });
 }
 
 /// Confirm and execute a previously-intercepted dangerous query in `window_id`.
@@ -904,6 +936,144 @@ pub fn paginate_query(sql: &str, limit: usize, offset: usize, db_type: DatabaseT
     }
 }
 
+/// Build the SQL for one server-side page of `base`, optionally filtered.
+///
+/// The keyword filter is pushed into SQL as a case-insensitive `LIKE` across
+/// every result column (mirroring the client-side text filter's semantics),
+/// then `offset`/`page_size` windowing is applied in the database's dialect
+/// via [`paginate_query`].
+pub fn build_result_page_sql(
+    base: &str,
+    filter: &str,
+    columns: &[String],
+    offset: usize,
+    page_size: usize,
+    window_id: u64,
+    cx: &App,
+) -> String {
+    let db_type = cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .map(|c| c.db_type())
+        .unwrap_or(DatabaseType::SQLite);
+    let trimmed = base.trim().trim_end_matches(';').trim();
+    let keyword = filter.trim();
+    let filtered = if keyword.is_empty() || columns.is_empty() {
+        trimmed.to_string()
+    } else {
+        let esc = keyword.to_lowercase().replace('\'', "''");
+        let conds: Vec<String> = columns
+            .iter()
+            .map(|col| {
+                let quoted = quote_ident(col, window_id, cx);
+                let cast = match db_type {
+                    DatabaseType::MySQL => format!("CAST({quoted} AS CHAR)"),
+                    _ => format!("CAST({quoted} AS TEXT)"),
+                };
+                format!("LOWER({cast}) LIKE '%{esc}%'")
+            })
+            .collect();
+        format!(
+            "SELECT * FROM ( {trimmed} ) AS _dbstudio_filter WHERE {}",
+            conds.join(" OR ")
+        )
+    };
+    paginate_query(&filtered, page_size, offset, db_type)
+}
+
+/// Fetch one results page without recording history.
+///
+/// Used by the results panel's server-side pagination: the SQL is built
+/// internally by [`build_result_page_sql`], so it skips the safe-mode
+/// classifier and the history/persistence bookkeeping that [`execute_query`]
+/// performs for user-typed statements. The outcome is stored as the session's
+/// latest result so the results panel picks it up like any other query.
+pub fn fetch_result_page(sql: String, window_id: u64, cx: &mut App) {
+    let conn = match cx
+        .global::<AppState>()
+        .active_connection_for(window_id)
+        .cloned()
+    {
+        Some(conn) => conn,
+        None => {
+            AppState::update_status(cx, "Not connected".to_string());
+            return;
+        }
+    };
+    let session_id = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.id);
+    cx.update_global::<AppState, _>(|state, _cx| {
+        if let Some(sid) = session_id {
+            if let Some(s) = state.session_mut(sid) {
+                s.is_executing = true;
+            }
+        }
+        state.status_message = "Loading page...".to_string();
+    });
+
+    cx.spawn(async move |cx| {
+        let result = conn.execute(&sql).await;
+        let sql_for_error = sql.clone();
+        cx.update_global::<AppState, _>(|state, _cx| {
+            if let Some(sid) = session_id {
+                if let Some(s) = state.session_mut(sid) {
+                    s.is_executing = false;
+                }
+            }
+            match result {
+                Ok(result) => {
+                    let ok = matches!(result, SqlResult::Query(_));
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(result));
+                        }
+                    }
+                    state.status_message = if ok {
+                        "Page loaded".to_string()
+                    } else {
+                        "Page fetch failed".to_string()
+                    };
+                }
+                Err(e) => {
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.last_result = Some(Arc::new(SqlResult::Error(
+                                dbstudio_core::result::ErrorResult {
+                                    message: e.to_string(),
+                                    sql: sql_for_error,
+                                    execution_time_ms: 0,
+                                },
+                            )));
+                        }
+                    }
+                    state.status_message = format!("Page fetch failed: {e}");
+                }
+            }
+        });
+    })
+    .detach();
+}
+
+/// Build the candidate-value query for a foreign-key cell dropdown: distinct
+/// non-null references from `target_table`, windowed per dialect by
+/// [`paginate_query`] so every driver gets its native row limit.
+pub fn build_fk_options_sql(
+    target_table: &str,
+    target_column: &str,
+    limit: usize,
+    offset: usize,
+    db_type: DatabaseType,
+) -> String {
+    let q_table = quote_ident_for(db_type, target_table);
+    let q_col = quote_ident_for(db_type, target_column);
+    let base = format!(
+        "SELECT DISTINCT {q_col} FROM {q_table} WHERE {q_col} IS NOT NULL ORDER BY {q_col}"
+    );
+    paginate_query(&base, limit, offset, db_type)
+}
+
 /// Quote a SQL identifier (table/column name) based on the database type of the
 /// active connection in `window_id`.
 pub fn quote_ident(name: &str, window_id: u64, cx: &App) -> String {
@@ -1149,6 +1319,49 @@ pub fn export_database(path: &str, window_id: u64, cx: &mut AsyncApp) {
                     state.status_message = format!(
                         "Exported {} tables ({} rows) to {}",
                         stats.tables_exported,
+                        stats.rows_exported,
+                        path.display()
+                    );
+                });
+            }
+            Err(e) => {
+                cx.update_global::<AppState, _>(|state, _cx| {
+                    state.status_message = format!("Export failed: {}", e);
+                });
+            }
+        }
+    })
+    .detach();
+}
+
+/// Export a single table (schema + data) of the active session in `window_id`
+/// to a SQL dump file. Used by the tables-tree "Export Table…" menu item.
+pub fn export_table(path: &str, table: &str, window_id: u64, cx: &mut AsyncApp) {
+    let path = path.to_string();
+    let table = table.to_string();
+    cx.spawn(async move |cx| {
+        let conn_result = cx.update_global::<AppState, _>(|state, _cx| {
+            state
+                .active_session_for(window_id)
+                .and_then(|s| s.connection.clone())
+        });
+
+        let Some(conn) = conn_result else {
+            return;
+        };
+
+        let path = std::path::PathBuf::from(path);
+        let config = dbstudio_db::export::ExportConfig {
+            tables: vec![table.clone()],
+            ..dbstudio_db::export::ExportConfig::default()
+        };
+
+        match dbstudio_db::export::export_database(&conn, &path, &config, None).await {
+            Ok(stats) => {
+                cx.update_global::<AppState, _>(|state, _cx| {
+                    state.status_message = format!(
+                        "Exported {} ({} rows) to {}",
+                        table,
                         stats.rows_exported,
                         path.display()
                     );

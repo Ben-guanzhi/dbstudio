@@ -1,15 +1,13 @@
 use super::connection::PostgresConnection;
+use anyhow::Result;
 use dbstudio_core::result::{RowExt, SqlResult};
 use dbstudio_core::schema::*;
-use anyhow::Result;
 
 impl PostgresConnection {
     pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
         let current = self.current_database().await.unwrap_or_default();
         let result = self
-            .execute(
-                "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
-            )
+            .execute("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname")
             .await?;
         Ok(crate::utils::map_query_result(result, |row| {
             let name = row.first_str();
@@ -74,7 +72,8 @@ impl PostgresConnection {
                    ORDER BY ordinal_position";
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         match result {
-            SqlResult::Query(q) => Ok(q.rows
+            SqlResult::Query(q) => Ok(q
+                .rows
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| ColumnInfo {
@@ -83,9 +82,7 @@ impl PostgresConnection {
                     ordinal: row.cell_u32(2, i as u32),
                     nullable: !row.cell_is(3, "NO"),
                     is_primary_key: pk_columns.contains(&row.cell_str(0)),
-                    default_value: row
-                        .get(4)
-                        .and_then(|c| c.value_if_not_null()),
+                    default_value: row.get(4).and_then(|c| c.value_if_not_null()),
                     comment: None,
                     table_name: Some(table.to_string()),
                 })
@@ -123,7 +120,11 @@ impl PostgresConnection {
         }))
     }
 
-    pub async fn list_foreign_keys(&self, table: &str, schema: Option<&str>) -> Result<Vec<ForeignKeyInfo>> {
+    pub async fn list_foreign_keys(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<ForeignKeyInfo>> {
         let schema = schema.unwrap_or("public");
         let sql = "SELECT tc.constraint_name, kcu.column_name,
                           ccu.table_name AS foreign_table_name,
@@ -136,14 +137,16 @@ impl PostgresConnection {
                    WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2";
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         let table = table.to_string();
-        Ok(crate::utils::map_query_result(result, move |row| ForeignKeyInfo {
-            name: row.cell_str(0),
-            source_table: table.clone(),
-            source_columns: vec![row.cell_str(1)],
-            target_table: row.cell_str(2),
-            target_columns: vec![row.cell_str(3)],
-            on_update: row.get(4).and_then(|c| c.value_if_not_null()),
-            on_delete: row.get(5).and_then(|c| c.value_if_not_null()),
+        Ok(crate::utils::map_query_result(result, move |row| {
+            ForeignKeyInfo {
+                name: row.cell_str(0),
+                source_table: table.clone(),
+                source_columns: vec![row.cell_str(1)],
+                target_table: row.cell_str(2),
+                target_columns: vec![row.cell_str(3)],
+                on_update: row.get(4).and_then(|c| c.value_if_not_null()),
+                on_delete: row.get(5).and_then(|c| c.value_if_not_null()),
+            }
         }))
     }
 

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use sqlx::{Pool, Sqlite};
 use chrono::{DateTime, Utc};
+use sqlx::{Pool, Sqlite};
 
 #[derive(Debug, Clone)]
 pub struct FavoriteQuery {
@@ -150,13 +150,20 @@ mod tests {
             let pool = test_pool("ids").await;
             let repo = FavoritesRepository::new(&pool);
 
-            let _a = repo.save("scoped", "SELECT 1", Some("conn-1")).await.unwrap();
+            let _a = repo
+                .save("scoped", "SELECT 1", Some("conn-1"))
+                .await
+                .unwrap();
             let _b = repo.save("global", "SELECT 2", None).await.unwrap();
 
             let all = repo.load_all().await.unwrap();
             assert_eq!(all.len(), 2);
-            assert!(all.iter().any(|f| f.name == "scoped" && f.connection_id.as_deref() == Some("conn-1")));
-            assert!(all.iter().any(|f| f.name == "global" && f.connection_id.is_none()));
+            assert!(all
+                .iter()
+                .any(|f| f.name == "scoped" && f.connection_id.as_deref() == Some("conn-1")));
+            assert!(all
+                .iter()
+                .any(|f| f.name == "global" && f.connection_id.is_none()));
         });
     }
 }

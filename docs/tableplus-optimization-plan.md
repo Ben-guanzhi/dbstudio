@@ -12,6 +12,12 @@
 > 编程侧批量下光标不可用（不影响用户侧）。
 > 当前 Vim 模式**已自研实现**（`crates/ui/src/components/vim.rs`，含 Visual 块
 > 作为补充），AI 行内补全、Review 逐条 Apply、编辑器偏好持久化亦已落地。
+>
+> **2026-09 状态补充**：界面方向已按 `docs/tablepro-ui-redesign-plan.md` 的
+> P1–P3 交付（对象标签页 / 树右键菜单 / 服务端分页 / F1 帮助 / FK 单元格下拉 /
+> 表·库导出入口 / 设置面板，详见该文档“交付状态”一节）；本文档的命令面板（3b）、
+> 查询历史搜索（3c，内存过滤版）、编辑器选区执行（2a）均已存在。尚未完成：storage 侧
+> `history.search()`（LIKE 查询）、多 schema 同名表导出、命令面板 frecency 排序。
 
 ---
 

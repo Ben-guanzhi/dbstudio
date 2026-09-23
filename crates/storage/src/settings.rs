@@ -40,10 +40,8 @@ mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     async fn test_pool() -> Pool<Sqlite> {
-        let path = std::env::temp_dir().join(format!(
-            "dbstudio-settings-test-{}.db",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("dbstudio-settings-test-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let options = SqliteConnectOptions::new()
             .filename(&path)
@@ -75,7 +73,9 @@ mod tests {
             let pool = test_pool().await;
 
             assert!(get_setting_bool(&pool, "app.safe_mode", true).await);
-            set_setting_bool(&pool, "app.safe_mode", false).await.unwrap();
+            set_setting_bool(&pool, "app.safe_mode", false)
+                .await
+                .unwrap();
             assert!(!get_setting_bool(&pool, "app.safe_mode", true).await);
 
             set_setting(&pool, "app.last_theme", "dark").await.unwrap();

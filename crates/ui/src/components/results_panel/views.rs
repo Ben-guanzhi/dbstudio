@@ -16,6 +16,16 @@ impl ResultsPanel {
                     .text_color(cx.theme().muted_foreground),
             )
             .child(Input::new(&self.filter_input).small().flex_1())
+            .child(
+                Button::new("server-filter-search")
+                    .label("Search")
+                    .small()
+                    .primary()
+                    .tooltip("Filter on the server (all rows, first page)")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.apply_server_filter(cx);
+                    })),
+            )
             .when(has_filter, |this| {
                 this.child(
                     Button::new("clear-filter")
@@ -28,9 +38,66 @@ impl ResultsPanel {
                                 input.set_value(String::new(), win, cx);
                             });
                             this.apply_filter(cx);
+                            // Restore the unfiltered first page when a
+                            // server-side filter was active.
+                            if this.server_filter.take().is_some() {
+                                this.fetch_page(0, false, cx);
+                            }
                         })),
                 )
             })
+            .child(self.render_pagination_bar(cx))
+    }
+
+    /// Server-side pagination row: page-size cycler and page navigation.
+    /// Renders as an empty div when no query result is displayed.
+    pub(super) fn render_pagination_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !matches!(self.result.as_deref(), Some(SqlResult::Query(_))) {
+            return div().into_any_element();
+        }
+        let page = self.page_offset / self.page_size.max(1) + 1;
+        let has_base = self.base_sql.is_some();
+        let can_back = has_base && !self.page_history.is_empty();
+        let can_next = has_base && self.more_pages;
+
+        h_flex()
+            .gap_1()
+            .items_center()
+            .ml_auto()
+            .child(
+                Button::new("page-size-cycle")
+                    .label(format!("{} rows", self.page_size))
+                    .small()
+                    .ghost()
+                    .tooltip("Cycle page size (100 / 500 / 1000)")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.cycle_page_size(cx);
+                    })),
+            )
+            .child(
+                Button::new("page-prev")
+                    .icon(Icon::new(IconName::ChevronLeft).size_3())
+                    .small()
+                    .ghost()
+                    .disabled(!can_back)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(prev) = this.page_history.pop() {
+                            this.fetch_page(prev, false, cx);
+                        }
+                    })),
+            )
+            .child(Label::new(format!("Page {page}")).text_xs())
+            .child(
+                Button::new("page-next")
+                    .icon(Icon::new(IconName::ChevronRight).size_3())
+                    .small()
+                    .ghost()
+                    .disabled(!can_next)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.fetch_page(this.page_offset + this.page_size, true, cx);
+                    })),
+            )
+            .into_any_element()
     }
 
     /// Type-aware per-column filter bar: active chips plus an "Add Filter"

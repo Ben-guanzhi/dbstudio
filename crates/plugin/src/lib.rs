@@ -1,6 +1,5 @@
 pub mod loader;
 
-
 /// Plugin metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PluginInfo {
@@ -70,7 +69,12 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     fn list_foreign_keys(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String>;
 
     /// Get CREATE TABLE SQL for a table.
-    fn get_create_table_sql(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String>;
+    fn get_create_table_sql(
+        &self,
+        handle: &str,
+        table: &str,
+        schema: &str,
+    ) -> anyhow::Result<String>;
 
     /// Switch to a different database.
     fn switch_database(&self, handle: &str, database: &str) -> anyhow::Result<()>;

@@ -1,24 +1,19 @@
+use dbstudio_core::ai::{provider_for, ChatMessage, Role};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Disableable as _,
-    Icon,
-    IconName,
-    Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Enter, Editor as CodeEditor, EditorState},
+    input::{Editor as CodeEditor, EditorState, Enter},
     select::{Select, SelectEvent, SelectState},
-    v_flex,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
 };
-use dbstudio_core::ai::{ChatMessage, Role, provider_for};
 use lsp_types::{CompletionItem, CompletionItemKind};
 use std::rc::Rc;
 
 use crate::components::sql_completion::SqlCompletionProvider;
 use crate::components::vim::{VimBuf, VimMode};
-use crate::state::{AppState, select_database};
+use crate::state::{select_database, AppState};
 use crate::utils::toolbar_divider;
 
 pub enum EditorEvent {
@@ -121,7 +116,10 @@ impl Editor {
     /// active session changes we save the outgoing buffer and load the
     /// incoming one.
     fn sync_editor_buffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let new_id = cx.global::<AppState>().window_state(self.window_id).active_session;
+        let new_id = cx
+            .global::<AppState>()
+            .window_state(self.window_id)
+            .active_session;
         if new_id == self.current_session_id {
             return;
         }
@@ -224,7 +222,10 @@ impl Editor {
 
         // Find line boundaries
         let line_start = full_text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let line_end = full_text[end..].find('\n').map(|i| end + i).unwrap_or(full_text.len());
+        let line_end = full_text[end..]
+            .find('\n')
+            .map(|i| end + i)
+            .unwrap_or(full_text.len());
 
         let selected_lines = &full_text[line_start..line_end];
         let all_commented = selected_lines.lines().all(|line| {
@@ -238,10 +239,10 @@ impl Editor {
                 if all_commented {
                     // Remove comment prefix
                     let trimmed = line.trim_start();
-                    if trimmed.starts_with("-- ") {
-                        format!("{}{}", &line[..line.len() - trimmed.len()], &trimmed[3..])
-                    } else if trimmed.starts_with("--") {
-                        format!("{}{}", &line[..line.len() - trimmed.len()], &trimmed[2..])
+                    if let Some(rest) = trimmed.strip_prefix("-- ") {
+                        format!("{}{}", &line[..line.len() - trimmed.len()], rest)
+                    } else if let Some(rest) = trimmed.strip_prefix("--") {
+                        format!("{}{}", &line[..line.len() - trimmed.len()], rest)
                     } else {
                         line.to_string()
                     }
@@ -253,7 +254,12 @@ impl Editor {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let new_text = format!("{}{}{}", &full_text[..line_start], new_lines, &full_text[line_end..]);
+        let new_text = format!(
+            "{}{}{}",
+            &full_text[..line_start],
+            new_lines,
+            &full_text[line_end..]
+        );
         let entity = self.input_state.clone();
         cx.update_entity(&entity, |i, cx| {
             i.set_value(SharedString::from(new_text), window, cx);
@@ -355,14 +361,22 @@ impl Editor {
                 .iter()
                 .map(|c| format!("{} {}", c.name, c.data_type))
                 .collect();
-            schema_ctx.push_str(&format!("TABLE {} ({})\n", s.table_name, columns.join(", ")));
+            schema_ctx.push_str(&format!(
+                "TABLE {} ({})\n",
+                s.table_name,
+                columns.join(", ")
+            ));
         }
         let prefix = &full_text[..cursor];
         let user_prompt = format!(
             "Schema:\n{}\n\nSQL buffer up to the cursor:\n```sql\n{}\n```\n\n\
              Continue this SQL statement. Output ONLY the characters to insert at the cursor \
              position to complete the statement naturally. No explanations, no markdown fences.",
-            if schema_ctx.trim().is_empty() { "No schema loaded." } else { schema_ctx.trim_end() },
+            if schema_ctx.trim().is_empty() {
+                "No schema loaded."
+            } else {
+                schema_ctx.trim_end()
+            },
             prefix
         );
 
@@ -372,10 +386,11 @@ impl Editor {
                 .chat(&[
                     ChatMessage {
                         role: Role::System,
-                        content: "You are an inline SQL autocompletion engine. Given the schema \
+                        content:
+                            "You are an inline SQL autocompletion engine. Given the schema \
                                   and the SQL written so far, reply with ONLY the text to append \
                                   at the cursor. Never invent table/column names not in the schema."
-                            .to_string(),
+                                .to_string(),
                     },
                     ChatMessage {
                         role: Role::User,
@@ -416,7 +431,12 @@ impl Editor {
     /// Route a raw key event through the Vim state machine. Returns `true` when
     /// the key was consumed (caller must stop propagation so the native editor
     /// never sees it).
-    fn vim_handle_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn vim_handle_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if event.is_held {
             return true;
         }
@@ -445,7 +465,10 @@ impl Editor {
             }
             match step.selection {
                 Some((lo, hi)) if lo < hi => i.set_selected_range(lo..hi, cx),
-                _ => i.set_selected_range(step.caret.min(i.value().len())..step.caret.min(i.value().len()), cx),
+                _ => i.set_selected_range(
+                    step.caret.min(i.value().len())..step.caret.min(i.value().len()),
+                    cx,
+                ),
             }
             if step.to_insert {
                 i.focus(window, cx);
@@ -510,7 +533,11 @@ impl Render for Editor {
             .small()
             .primary()
             .ghost()
-            .tooltip(if self.is_executing { "Executing..." } else { "Execute (Ctrl-Enter)" })
+            .tooltip(if self.is_executing {
+                "Executing..."
+            } else {
+                "Execute (Ctrl-Enter)"
+            })
             .loading(self.is_executing)
             .disabled(!has_connection)
             .on_click(cx.listener(Self::on_execute));
@@ -572,13 +599,11 @@ impl Render for Editor {
                 },
             ))
             .when(self.vim_on, |this| {
-                this.capture_key_down(cx.listener(
-                    |this, event: &KeyDownEvent, window, cx| {
-                        if this.vim_handle_key(event, window, cx) {
-                            cx.stop_propagation();
-                        }
-                    },
-                ))
+                this.capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if this.vim_handle_key(event, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }))
             })
             .size_full()
             .child(toolbar)
@@ -621,7 +646,10 @@ fn normalize_ai_completion(content: &str) -> String {
     }
 }
 
-fn refresh_schema_completions(provider: &SqlCompletionProvider, tables: &[dbstudio_core::schema::TableInfo]) {
+fn refresh_schema_completions(
+    provider: &SqlCompletionProvider,
+    tables: &[dbstudio_core::schema::TableInfo],
+) {
     let items: Vec<CompletionItem> = tables
         .iter()
         .map(|table| {

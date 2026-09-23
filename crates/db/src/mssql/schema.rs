@@ -1,7 +1,7 @@
 use super::connection::MssqlConnection;
+use anyhow::Result;
 use dbstudio_core::result::{RowExt, SqlResult};
 use dbstudio_core::schema::*;
-use anyhow::Result;
 
 impl MssqlConnection {
     pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
@@ -73,7 +73,8 @@ impl MssqlConnection {
                    ORDER BY ORDINAL_POSITION";
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         match result {
-            SqlResult::Query(q) => Ok(q.rows
+            SqlResult::Query(q) => Ok(q
+                .rows
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| ColumnInfo {
@@ -82,9 +83,7 @@ impl MssqlConnection {
                     ordinal: row.cell_u32(2, i as u32),
                     nullable: !row.cell_is(3, "NO"),
                     is_primary_key: pk_columns.contains(&row.cell_str(0)),
-                    default_value: row
-                        .get(4)
-                        .and_then(|c| c.value_if_not_null()),
+                    default_value: row.get(4).and_then(|c| c.value_if_not_null()),
                     comment: None,
                     table_name: Some(table.to_string()),
                 })
@@ -129,7 +128,11 @@ impl MssqlConnection {
         }))
     }
 
-    pub async fn list_foreign_keys(&self, table: &str, schema: Option<&str>) -> Result<Vec<ForeignKeyInfo>> {
+    pub async fn list_foreign_keys(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<ForeignKeyInfo>> {
         let schema = schema.unwrap_or("dbo");
         let sql = "SELECT fk.name, COL_NAME(fkc.parent_object_id, fkc.parent_column_id) as col,
                     OBJECT_NAME(fkc.referenced_object_id) as ref_table,
@@ -141,14 +144,16 @@ impl MssqlConnection {
              WHERE s.name = @p1 AND t.name = @p2";
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         let table = table.to_string();
-        Ok(crate::utils::map_query_result(result, move |row| ForeignKeyInfo {
-            name: row.cell_str(0),
-            source_table: table.clone(),
-            source_columns: vec![row.cell_str(1)],
-            target_table: row.cell_str(2),
-            target_columns: vec![row.cell_str(3)],
-            on_delete: None,
-            on_update: None,
+        Ok(crate::utils::map_query_result(result, move |row| {
+            ForeignKeyInfo {
+                name: row.cell_str(0),
+                source_table: table.clone(),
+                source_columns: vec![row.cell_str(1)],
+                target_table: row.cell_str(2),
+                target_columns: vec![row.cell_str(3)],
+                on_delete: None,
+                on_update: None,
+            }
         }))
     }
 

@@ -137,7 +137,7 @@ pub fn connect_plugin(
 ) -> Result<Connection> {
     let config_json = serde_json::to_string(config)?;
     let handle = plugin.connect(&config_json, password)?;
-    
+
     Ok(Connection {
         inner: ConnectionInner::Plugin(PluginConnection::new(plugin, handle)),
         _tunnel: None,
@@ -199,16 +199,24 @@ impl PluginConnection {
         Ok(indexes)
     }
 
-    pub async fn list_foreign_keys(&self, table: &str, schema: Option<&str>) -> Result<Vec<ForeignKeyInfo>> {
+    pub async fn list_foreign_keys(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<ForeignKeyInfo>> {
         let schema_str = schema.unwrap_or("");
-        let result_json = self.plugin.list_foreign_keys(&self.handle, table, schema_str)?;
+        let result_json = self
+            .plugin
+            .list_foreign_keys(&self.handle, table, schema_str)?;
         let fks: Vec<ForeignKeyInfo> = serde_json::from_str(&result_json)?;
         Ok(fks)
     }
 
     pub async fn get_create_table_sql(&self, table: &str, schema: Option<&str>) -> Result<String> {
         let schema_str = schema.unwrap_or("");
-        let sql = self.plugin.get_create_table_sql(&self.handle, table, schema_str)?;
+        let sql = self
+            .plugin
+            .get_create_table_sql(&self.handle, table, schema_str)?;
         Ok(sql)
     }
 }
@@ -246,11 +254,21 @@ pub async fn connect(
     }
 
     let connection = match config.db_type {
-        DatabaseType::SQLite => ConnectionInner::Sqlite(sqlite::SqliteConnection::open(&config).await?),
-        DatabaseType::MySQL => ConnectionInner::MySql(mysql::MySqlConnection::open(&config, password).await?),
-        DatabaseType::PostgreSQL => ConnectionInner::Postgres(postgres::PostgresConnection::open(&config, password).await?),
-        DatabaseType::MSSQL => ConnectionInner::Mssql(mssql::MssqlConnection::open(&config, password).await?),
-        DatabaseType::Oracle => ConnectionInner::Oracle(oracle::OracleConnection::open(&config, password).await?),
+        DatabaseType::SQLite => {
+            ConnectionInner::Sqlite(sqlite::SqliteConnection::open(&config).await?)
+        }
+        DatabaseType::MySQL => {
+            ConnectionInner::MySql(mysql::MySqlConnection::open(&config, password).await?)
+        }
+        DatabaseType::PostgreSQL => {
+            ConnectionInner::Postgres(postgres::PostgresConnection::open(&config, password).await?)
+        }
+        DatabaseType::MSSQL => {
+            ConnectionInner::Mssql(mssql::MssqlConnection::open(&config, password).await?)
+        }
+        DatabaseType::Oracle => {
+            ConnectionInner::Oracle(oracle::OracleConnection::open(&config, password).await?)
+        }
     };
     Ok(Connection {
         inner: connection,
@@ -270,19 +288,35 @@ pub async fn list_tables(conn: &Connection, schema: &str) -> Result<Vec<TableInf
     delegate_to_driver!(conn, list_tables, schema)
 }
 
-pub async fn list_columns(conn: &Connection, table: &str, schema: Option<&str>) -> Result<Vec<ColumnInfo>> {
+pub async fn list_columns(
+    conn: &Connection,
+    table: &str,
+    schema: Option<&str>,
+) -> Result<Vec<ColumnInfo>> {
     delegate_to_driver!(conn, list_columns, table, schema)
 }
 
-pub async fn list_indexes(conn: &Connection, table: &str, schema: Option<&str>) -> Result<Vec<IndexInfo>> {
+pub async fn list_indexes(
+    conn: &Connection,
+    table: &str,
+    schema: Option<&str>,
+) -> Result<Vec<IndexInfo>> {
     delegate_to_driver!(conn, list_indexes, table, schema)
 }
 
-pub async fn list_foreign_keys(conn: &Connection, table: &str, schema: Option<&str>) -> Result<Vec<ForeignKeyInfo>> {
+pub async fn list_foreign_keys(
+    conn: &Connection,
+    table: &str,
+    schema: Option<&str>,
+) -> Result<Vec<ForeignKeyInfo>> {
     delegate_to_driver!(conn, list_foreign_keys, table, schema)
 }
 
-pub async fn get_create_table_sql(conn: &Connection, table: &str, schema: Option<&str>) -> Result<String> {
+pub async fn get_create_table_sql(
+    conn: &Connection,
+    table: &str,
+    schema: Option<&str>,
+) -> Result<String> {
     delegate_to_driver!(conn, get_create_table_sql, table, schema)
 }
 
@@ -334,11 +368,21 @@ mod tests {
             Ok("[]".to_string())
         }
 
-        fn list_columns(&self, _handle: &str, _table: &str, _schema: &str) -> anyhow::Result<String> {
+        fn list_columns(
+            &self,
+            _handle: &str,
+            _table: &str,
+            _schema: &str,
+        ) -> anyhow::Result<String> {
             Ok("[]".to_string())
         }
 
-        fn list_indexes(&self, _handle: &str, _table: &str, _schema: &str) -> anyhow::Result<String> {
+        fn list_indexes(
+            &self,
+            _handle: &str,
+            _table: &str,
+            _schema: &str,
+        ) -> anyhow::Result<String> {
             Ok("[]".to_string())
         }
 
@@ -351,7 +395,12 @@ mod tests {
             Ok("[]".to_string())
         }
 
-        fn get_create_table_sql(&self, _handle: &str, _table: &str, _schema: &str) -> anyhow::Result<String> {
+        fn get_create_table_sql(
+            &self,
+            _handle: &str,
+            _table: &str,
+            _schema: &str,
+        ) -> anyhow::Result<String> {
             Ok(String::new())
         }
 
@@ -427,9 +476,9 @@ mod tests {
         let mut config = ConnectionConfig::new(DatabaseType::SQLite, "mock".to_string());
         config.plugin_name = Some("unloaded-plugin".to_string());
         let err = match smol::block_on(connect(&config, "pw", None, None)) {
-        Ok(_) => panic!("expected plugin routing error"),
-        Err(e) => e,
-    };
+            Ok(_) => panic!("expected plugin routing error"),
+            Err(e) => e,
+        };
         assert!(
             err.to_string().contains("is not loaded"),
             "unexpected error: {err}"

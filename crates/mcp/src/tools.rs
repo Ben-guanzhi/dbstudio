@@ -15,6 +15,12 @@ pub struct McpState {
     pub password: RwLock<String>,
 }
 
+impl Default for McpState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpState {
     pub fn new() -> Self {
         Self {
@@ -163,7 +169,8 @@ pub async fn call_tool(
 
 async fn get_connection(state: &McpState) -> Result<Arc<Connection>, CallToolResult> {
     let conn = state.connection.read().await;
-    conn.clone().ok_or_else(|| CallToolResult::error("Not connected. Use 'connect' first.".into()))
+    conn.clone()
+        .ok_or_else(|| CallToolResult::error("Not connected. Use 'connect' first.".into()))
 }
 
 async fn handle_connect(state: &McpState, args: &serde_json::Value) -> CallToolResult {
@@ -186,10 +193,22 @@ async fn handle_connect(state: &McpState, args: &serde_json::Value) -> CallToolR
     };
 
     let mut config = ConnectionConfig::new(db_type, "MCP Connection".into());
-    config.host = args.get("host").and_then(|v| v.as_str()).unwrap_or("").into();
+    config.host = args
+        .get("host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .into();
     config.port = args.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-    config.database = args.get("database").and_then(|v| v.as_str()).unwrap_or("").into();
-    config.username = args.get("username").and_then(|v| v.as_str()).unwrap_or("").into();
+    config.database = args
+        .get("database")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .into();
+    config.username = args
+        .get("username")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .into();
 
     match dbstudio_db::connect(&config, password, None, None).await {
         Ok(conn) => {
@@ -251,7 +270,9 @@ async fn handle_list_columns(state: &McpState, args: &serde_json::Value) -> Call
         Err(e) => return e,
     };
     match dbstudio_db::list_columns(&conn, table, schema).await {
-        Ok(columns) => CallToolResult::success(serde_json::to_string_pretty(&columns).unwrap_or_default()),
+        Ok(columns) => {
+            CallToolResult::success(serde_json::to_string_pretty(&columns).unwrap_or_default())
+        }
         Err(e) => CallToolResult::error(format!("Failed: {}", e)),
     }
 }
@@ -268,7 +289,9 @@ async fn handle_list_indexes(state: &McpState, args: &serde_json::Value) -> Call
         Err(e) => return e,
     };
     match dbstudio_db::list_indexes(&conn, table, schema).await {
-        Ok(indexes) => CallToolResult::success(serde_json::to_string_pretty(&indexes).unwrap_or_default()),
+        Ok(indexes) => {
+            CallToolResult::success(serde_json::to_string_pretty(&indexes).unwrap_or_default())
+        }
         Err(e) => CallToolResult::error(format!("Failed: {}", e)),
     }
 }
@@ -365,9 +388,10 @@ fn format_result(result: &SqlResult) -> String {
             output.push('\n');
             // Rows
             for row in &query.rows {
-                let vals: Vec<&str> = row.iter().map(|c| {
-                    if c.is_null { "NULL" } else { &c.value }
-                }).collect();
+                let vals: Vec<&str> = row
+                    .iter()
+                    .map(|c| if c.is_null { "NULL" } else { &c.value })
+                    .collect();
                 output.push_str(&vals.join(" | "));
                 output.push('\n');
             }

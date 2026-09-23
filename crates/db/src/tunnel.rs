@@ -31,7 +31,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use dbstudio_core::models::{ConnectionConfig, SshAuthType, SshConfig};
 
 /// Fallback host for configs that leave `host` empty.
@@ -270,8 +270,12 @@ impl SshTunnel {
         let ssh_key_passphrase = ssh_key_passphrase.map(|p| p.to_string());
 
         runtime().spawn(async move {
-            let result = establish(&tunnel, ssh_password.as_deref(), ssh_key_passphrase.as_deref())
-                .await;
+            let result = establish(
+                &tunnel,
+                ssh_password.as_deref(),
+                ssh_key_passphrase.as_deref(),
+            )
+            .await;
             let _ = tx.send(result);
         });
 
@@ -292,10 +296,13 @@ async fn establish(
     let username = tunnel.ssh.username.trim();
 
     let config = Arc::new(russh::client::Config::default());
-    let mut session =
-        russh::client::connect(config, (ssh_host, ssh_port), KnownHostsHandler::new(ssh_host, ssh_port))
-            .await
-            .with_context(|| format!("failed to connect to SSH server {ssh_host}:{ssh_port}"))?;
+    let mut session = russh::client::connect(
+        config,
+        (ssh_host, ssh_port),
+        KnownHostsHandler::new(ssh_host, ssh_port),
+    )
+    .await
+    .with_context(|| format!("failed to connect to SSH server {ssh_host}:{ssh_port}"))?;
 
     match tunnel.ssh.auth_type {
         SshAuthType::Password => {

@@ -204,7 +204,11 @@ where
         .iter()
         .enumerate()
         .map(|(i, col)| {
-            ColumnInfo::new(col.name().to_string(), col.type_info().name().to_string(), i as u32)
+            ColumnInfo::new(
+                col.name().to_string(),
+                col.type_info().name().to_string(),
+                i as u32,
+            )
         })
         .collect();
 

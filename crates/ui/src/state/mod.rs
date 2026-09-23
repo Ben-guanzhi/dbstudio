@@ -26,6 +26,37 @@ pub struct FavoriteEntry {
     pub connection_id: Option<String>,
 }
 
+/// Which view of the currently-open database object the center pane shows.
+///
+/// Mirrors the TablePlus-style object tabs (Data / Structure / Query /
+/// History). Stored per session so each connection tab remembers where it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectSegment {
+    #[default]
+    Data,
+    Structure,
+    Query,
+    History,
+}
+
+impl ObjectSegment {
+    pub const ALL: [ObjectSegment; 4] = [
+        ObjectSegment::Data,
+        ObjectSegment::Structure,
+        ObjectSegment::Query,
+        ObjectSegment::History,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ObjectSegment::Data => "Data",
+            ObjectSegment::Structure => "Structure",
+            ObjectSegment::Query => "Query",
+            ObjectSegment::History => "History",
+        }
+    }
+}
+
 /// A single live database connection tab.
 ///
 /// Each session keeps the connection handle plus all connection-scoped state
@@ -55,6 +86,10 @@ pub struct ConnectionSession {
     pub undo_stack: Vec<guard::EditRecord>,
     /// Redone edits for redo support.
     pub redo_stack: Vec<guard::EditRecord>,
+    /// Which object segment (Data/Structure/Query/History) the center pane shows.
+    pub active_object: ObjectSegment,
+    /// The table currently open in the object tabs: (name, schema).
+    pub current_object: Option<(String, Option<String>)>,
 }
 
 impl ConnectionSession {
@@ -76,6 +111,8 @@ impl ConnectionSession {
             pending_edits: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            active_object: ObjectSegment::default(),
+            current_object: None,
         }
     }
 }
@@ -233,6 +270,19 @@ impl AppState {
         self.windows
             .values()
             .any(|w| w.active_session == Some(session_id))
+    }
+
+    /// The object segment the center pane of `window_id` is showing.
+    pub fn active_object_for(&self, window_id: u64) -> ObjectSegment {
+        self.active_session_for(window_id)
+            .map(|s| s.active_object)
+            .unwrap_or_default()
+    }
+
+    /// The table currently open in `window_id`'s object tabs, if any.
+    pub fn current_object_for(&self, window_id: u64) -> Option<(String, Option<String>)> {
+        self.active_session_for(window_id)
+            .and_then(|s| s.current_object.clone())
     }
 }
 

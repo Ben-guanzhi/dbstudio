@@ -1,7 +1,7 @@
 use super::connection::OracleConnection;
+use anyhow::Result;
 use dbstudio_core::result::{RowExt, SqlResult};
 use dbstudio_core::schema::*;
-use anyhow::Result;
 
 impl OracleConnection {
     pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
@@ -10,7 +10,9 @@ impl OracleConnection {
 
     pub async fn list_schemas(&self, _database: &str) -> Result<Vec<SchemaInfo>> {
         let result = self
-            .execute("SELECT username FROM all_users WHERE oracle_maintained = 'N' ORDER BY username")
+            .execute(
+                "SELECT username FROM all_users WHERE oracle_maintained = 'N' ORDER BY username",
+            )
             .await?;
         Ok(crate::utils::map_query_result(result, |row| SchemaInfo {
             name: row.first_str(),
@@ -27,7 +29,10 @@ impl OracleConnection {
         let result = self.execute(sql).await?;
         Ok(crate::utils::map_query_result(result, |row| TableInfo {
             name: row.cell_str(1),
-            schema: row.first().map(|c| c.value.clone()).filter(|s| !s.is_empty()),
+            schema: row
+                .first()
+                .map(|c| c.value.clone())
+                .filter(|s| !s.is_empty()),
             database: None,
             table_type: TableType::Table,
             row_count: None,
@@ -43,7 +48,9 @@ impl OracleConnection {
                       JOIN all_cons_columns acc
                         ON ac.constraint_name = acc.constraint_name AND ac.owner = acc.owner
                       WHERE ac.constraint_type = 'P' AND ac.owner = :1 AND ac.table_name = :2";
-        let pk_result = self.execute_parameterized(pk_sql, &[&schema, &table_upper]).await?;
+        let pk_result = self
+            .execute_parameterized(pk_sql, &[&schema, &table_upper])
+            .await?;
         let pk_columns: std::collections::HashSet<String> =
             crate::utils::map_query_result(pk_result, |row| row.first_str())
                 .into_iter()
@@ -53,9 +60,12 @@ impl OracleConnection {
                    FROM all_tab_columns
                    WHERE owner = :1 AND table_name = :2
                    ORDER BY column_id";
-        let result = self.execute_parameterized(sql, &[&schema, &table_upper]).await?;
+        let result = self
+            .execute_parameterized(sql, &[&schema, &table_upper])
+            .await?;
         match result {
-            SqlResult::Query(q) => Ok(q.rows
+            SqlResult::Query(q) => Ok(q
+                .rows
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| ColumnInfo {
@@ -64,9 +74,7 @@ impl OracleConnection {
                     ordinal: row.cell_u32(2, i as u32),
                     nullable: !row.cell_is(3, "N"),
                     is_primary_key: pk_columns.contains(&row.cell_str(0)),
-                    default_value: row
-                        .get(4)
-                        .and_then(|c| c.value_if_not_null()),
+                    default_value: row.get(4).and_then(|c| c.value_if_not_null()),
                     comment: None,
                     table_name: Some(table.to_string()),
                 })
@@ -84,7 +92,9 @@ impl OracleConnection {
              JOIN all_ind_columns c ON i.index_name = c.index_name AND i.owner = c.index_owner
              WHERE i.owner = :1 AND i.table_name = :2
              GROUP BY i.index_name, i.index_type, i.uniqueness";
-        let result = self.execute_parameterized(sql, &[&schema, &table_upper]).await?;
+        let result = self
+            .execute_parameterized(sql, &[&schema, &table_upper])
+            .await?;
         let table = table.to_string();
         Ok(crate::utils::map_query_result(result, move |row| {
             let columns: Vec<String> = row
@@ -102,7 +112,11 @@ impl OracleConnection {
         }))
     }
 
-    pub async fn list_foreign_keys(&self, table: &str, schema: Option<&str>) -> Result<Vec<ForeignKeyInfo>> {
+    pub async fn list_foreign_keys(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<ForeignKeyInfo>> {
         let schema = schema.unwrap_or("PUBLIC").to_uppercase();
         let table_upper = table.to_uppercase();
         let sql = "SELECT c.constraint_name, cc.column_name,
@@ -112,16 +126,20 @@ impl OracleConnection {
              JOIN all_constraints r ON c.r_constraint_name = r.constraint_name
              JOIN all_cons_columns rc ON r.constraint_name = rc.constraint_name AND r.owner = rc.owner
              WHERE c.constraint_type = 'R' AND c.owner = :1 AND c.table_name = :2";
-        let result = self.execute_parameterized(sql, &[&schema, &table_upper]).await?;
+        let result = self
+            .execute_parameterized(sql, &[&schema, &table_upper])
+            .await?;
         let table = table.to_string();
-        Ok(crate::utils::map_query_result(result, move |row| ForeignKeyInfo {
-            name: row.cell_str(0),
-            source_table: table.clone(),
-            source_columns: vec![row.cell_str(1)],
-            target_table: row.cell_str(2),
-            target_columns: vec![row.cell_str(3)],
-            on_delete: row.get(4).and_then(|c| c.value_if_not_null()),
-            on_update: None,
+        Ok(crate::utils::map_query_result(result, move |row| {
+            ForeignKeyInfo {
+                name: row.cell_str(0),
+                source_table: table.clone(),
+                source_columns: vec![row.cell_str(1)],
+                target_table: row.cell_str(2),
+                target_columns: vec![row.cell_str(3)],
+                on_delete: row.get(4).and_then(|c| c.value_if_not_null()),
+                on_update: None,
+            }
         }))
     }
 
@@ -138,7 +156,9 @@ impl OracleConnection {
              FROM all_tab_columns
              WHERE owner = :1 AND table_name = :2
              ORDER BY column_id";
-        let result = self.execute_parameterized(sql, &[&schema, &table_upper]).await?;
+        let result = self
+            .execute_parameterized(sql, &[&schema, &table_upper])
+            .await?;
         match result {
             SqlResult::Query(q) => {
                 let mut lines = Vec::new();

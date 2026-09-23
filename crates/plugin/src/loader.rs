@@ -46,7 +46,7 @@ impl PluginManager {
     /// Load all plugins from the configured directories.
     pub fn load_all(&mut self) -> Result<()> {
         let dirs: Vec<PathBuf> = self.plugin_dirs.clone();
-        
+
         for dir in &dirs {
             if !dir.exists() {
                 continue;
@@ -151,4 +151,3 @@ fn is_plugin_library(path: &Path) -> bool {
         _ => ext == "so",
     }
 }
-

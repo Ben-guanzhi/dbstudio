@@ -38,6 +38,39 @@ impl Workspace {
             .border_l_1()
             .border_color(cx.theme().border)
             .child(self.ai_panel.clone());
+        let segment = cx.global::<AppState>().active_object_for(self.window_id);
+        let segment_bar = h_flex()
+            .id("object-segment-bar")
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .flex_none()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .children(ObjectSegment::ALL.into_iter().map(|seg| {
+                let is_active = seg == segment;
+                div()
+                    .id(SharedString::from(format!("object-seg-{}", seg.label())))
+                    .px_3()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .text_xs()
+                    .font_medium()
+                    .when(is_active, |this| {
+                        this.bg(cx.theme().accent)
+                            .text_color(cx.theme().accent_foreground)
+                    })
+                    .when(!is_active, |this| {
+                        this.text_color(cx.theme().muted_foreground)
+                            .hover(|this| this.bg(cx.theme().list_hover))
+                    })
+                    .child(seg.label())
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                        set_object_segment(seg, this.window_id, cx);
+                        cx.notify();
+                    }))
+            }));
         let editor_pane = div()
             .id("editor-pane")
             .flex()
@@ -57,6 +90,43 @@ impl Workspace {
                     )
                     .child(resizable_panel().child(self.results.clone())),
             );
+        // The center pane shows one object segment at a time: Data/Query share
+        // the editor + results split, Structure and History take it over fully.
+        let center_pane = match segment {
+            ObjectSegment::Data | ObjectSegment::Query => editor_pane,
+            ObjectSegment::Structure => div()
+                .id("structure-pane")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .h_full()
+                .w_full()
+                .min_h_0()
+                .overflow_hidden()
+                .child(self.structure.clone()),
+            ObjectSegment::History => div()
+                .id("history-pane")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .h_full()
+                .w_full()
+                .min_h_0()
+                .overflow_hidden()
+                .child(self.history.clone()),
+        };
+        let center = div()
+            .id("center-pane")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .h_full()
+            .w_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(segment_bar)
+            .child(center_pane);
         let main_area = div()
             .id("main-area")
             .flex()
@@ -65,7 +135,7 @@ impl Workspace {
             .h_full()
             .min_h_0()
             .when(show_tables, |this| this.child(sidebar))
-            .child(editor_pane)
+            .child(center)
             .when(show_history, |this| this.child(history_panel))
             .when(show_ai, |this| this.child(ai_panel));
 

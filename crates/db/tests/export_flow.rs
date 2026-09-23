@@ -18,7 +18,9 @@ fn sqlite_config(path: &str) -> ConnectionConfig {
 fn setup_source_db(source: &str) {
     let config = sqlite_config(source);
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&config, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL)")
             .await
             .expect("create");
@@ -46,7 +48,9 @@ fn export_import_round_trip_preserves_data() {
     let dump_path = dump.clone();
 
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&smol_source, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&smol_source, "", None, None)
+            .await
+            .expect("connect");
         let config = ExportConfig::default();
         let stats = export_database(&conn, std::path::Path::new(&dump_path), &config, None)
             .await
@@ -58,9 +62,16 @@ fn export_import_round_trip_preserves_data() {
 
     let dump_content = std::fs::read_to_string(&dump).expect("read dump");
     assert!(dump_content.contains("DROP TABLE IF EXISTS `items`"));
-    assert!(dump_content.contains("CREATE TABLE items"), "dump should preserve schema SQL: {}", dump_content);
+    assert!(
+        dump_content.contains("CREATE TABLE items"),
+        "dump should preserve schema SQL: {}",
+        dump_content
+    );
     assert!(dump_content.contains("INSERT INTO `items`"));
-    assert!(dump_content.contains("'o''brien'"), "dump must escape single quotes");
+    assert!(
+        dump_content.contains("'o''brien'"),
+        "dump must escape single quotes"
+    );
 
     // Import into a fresh database
     let dest_config = sqlite_config(&dest);
@@ -68,7 +79,9 @@ fn export_import_round_trip_preserves_data() {
     let dump_path = dump.clone();
 
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&smol_dest, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&smol_dest, "", None, None)
+            .await
+            .expect("connect");
         let stats = import_database(&conn, std::path::Path::new(&dump_path), None)
             .await
             .expect("import");
@@ -86,7 +99,10 @@ fn export_import_round_trip_preserves_data() {
         };
         assert_eq!(q.row_count, 4, "all rows should round-trip");
         assert_eq!(q.rows[0][1].value, "apple");
-        assert_eq!(q.rows[3][1].value, "o'brien", "escaped quote should round-trip");
+        assert_eq!(
+            q.rows[3][1].value, "o'brien",
+            "escaped quote should round-trip"
+        );
     });
 }
 
@@ -101,7 +117,9 @@ fn export_data_only_config() {
     let dump_path = dump.clone();
 
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&config, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
         let export_config = ExportConfig {
             include_schema: false,
             include_data: true,
@@ -109,15 +127,26 @@ fn export_data_only_config() {
             tables: vec!["items".to_string()],
             ..Default::default()
         };
-        let stats = export_database(&conn, std::path::Path::new(&dump_path), &export_config, None)
-            .await
-            .expect("export");
+        let stats = export_database(
+            &conn,
+            std::path::Path::new(&dump_path),
+            &export_config,
+            None,
+        )
+        .await
+        .expect("export");
         assert_eq!(stats.rows_exported, 4);
     });
 
     let dump_content = std::fs::read_to_string(&dump).expect("read dump");
-    assert!(!dump_content.contains("DROP TABLE"), "data-only must not emit DROP");
-    assert!(!dump_content.contains("CREATE TABLE"), "data-only must not emit CREATE");
+    assert!(
+        !dump_content.contains("DROP TABLE"),
+        "data-only must not emit DROP"
+    );
+    assert!(
+        !dump_content.contains("CREATE TABLE"),
+        "data-only must not emit CREATE"
+    );
     assert!(dump_content.contains("INSERT INTO `items`"));
 }
 
@@ -132,21 +161,91 @@ fn export_schema_only_config() {
     let dump_path = dump.clone();
 
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&config, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
         let export_config = ExportConfig {
             include_schema: true,
             include_data: false,
             include_drop: true,
             ..Default::default()
         };
-        let stats = export_database(&conn, std::path::Path::new(&dump_path), &export_config, None)
-            .await
-            .expect("export");
+        let stats = export_database(
+            &conn,
+            std::path::Path::new(&dump_path),
+            &export_config,
+            None,
+        )
+        .await
+        .expect("export");
         assert_eq!(stats.rows_exported, 0);
         assert_eq!(stats.tables_exported, 0);
     });
 
     let dump_content = std::fs::read_to_string(&dump).expect("read dump");
-    assert!(dump_content.contains("CREATE TABLE items"), "schema-only should emit CREATE: {}", dump_content);
-    assert!(!dump_content.contains("INSERT INTO `items`"), "schema-only must not emit INSERT");
+    assert!(
+        dump_content.contains("CREATE TABLE items"),
+        "schema-only should emit CREATE: {}",
+        dump_content
+    );
+    assert!(
+        !dump_content.contains("INSERT INTO `items`"),
+        "schema-only must not emit INSERT"
+    );
+}
+
+#[test]
+fn export_single_table_subset_excludes_others() {
+    let source = temp_db_path("subset.db");
+    let dump = temp_db_path("subset.sql");
+    let _ = std::fs::remove_file(&dump);
+
+    setup_source_db(&source);
+
+    // A second table that must not show up in the dump: this is what the
+    // tables-tree "Export Table…" menu item relies on.
+    let config = sqlite_config(&source);
+    smol::block_on(async {
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
+        conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, item_id INTEGER)")
+            .await
+            .expect("create orders");
+        conn.execute("INSERT INTO orders (item_id) VALUES (1)")
+            .await
+            .expect("insert orders");
+    });
+
+    let config = sqlite_config(&source);
+    let dump_path = dump.clone();
+    smol::block_on(async {
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
+        let export_config = ExportConfig {
+            tables: vec!["items".to_string()],
+            ..Default::default()
+        };
+        let stats = export_database(
+            &conn,
+            std::path::Path::new(&dump_path),
+            &export_config,
+            None,
+        )
+        .await
+        .expect("export");
+        assert_eq!(stats.tables_exported, 1);
+        assert_eq!(stats.rows_exported, 4);
+    });
+
+    let dump_content = std::fs::read_to_string(&dump).expect("read dump");
+    assert!(dump_content.contains("DROP TABLE IF EXISTS `items`"));
+    assert!(dump_content.contains("CREATE TABLE items"));
+    assert!(dump_content.contains("INSERT INTO `items`"));
+    assert!(
+        !dump_content.contains("orders"),
+        "tables outside the subset must be excluded: {}",
+        dump_content
+    );
 }

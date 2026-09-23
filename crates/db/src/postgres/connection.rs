@@ -1,6 +1,6 @@
+use crate::utils::{build_query_result_from_rows, finalize_query_result};
 use anyhow::Result;
 use dbstudio_core::models::ConnectionConfig;
-use crate::utils::{build_query_result_from_rows, finalize_query_result};
 use dbstudio_core::result::{CellType, ResultCell, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::ColumnInfo;
 use sqlx::{Arguments, Column, Executor, PgPool, Row, TypeInfo, ValueRef};
@@ -142,7 +142,12 @@ impl PostgresConnection {
                     return Ok(finalize_query_result(columns, Vec::new(), sql, elapsed));
                 }
             }
-            return Ok(build_query_result_from_rows(rows, sql, elapsed, extract_pg_cell));
+            return Ok(build_query_result_from_rows(
+                rows,
+                sql,
+                elapsed,
+                extract_pg_cell,
+            ));
         }
 
         let result = sqlx::query(&sql).execute(&pool).await?;
@@ -186,10 +191,20 @@ impl PostgresConnection {
                         )
                     })
                     .collect();
-                return Ok(finalize_query_result(columns, Vec::new(), sql_owned, elapsed));
+                return Ok(finalize_query_result(
+                    columns,
+                    Vec::new(),
+                    sql_owned,
+                    elapsed,
+                ));
             }
         }
-        Ok(build_query_result_from_rows(rows, sql_owned, elapsed, extract_pg_cell))
+        Ok(build_query_result_from_rows(
+            rows,
+            sql_owned,
+            elapsed,
+            extract_pg_cell,
+        ))
     }
 
     pub async fn current_database(&self) -> Result<String> {

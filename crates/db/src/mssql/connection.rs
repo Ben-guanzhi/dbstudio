@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
-use crate::tunnel::{Endpoint, runtime};
+use crate::tunnel::{runtime, Endpoint};
 use crate::utils::{finalize_query_result, hex_encode, is_select_query};
 
 type TdsClient = tiberius::Client<tokio_util::compat::Compat<tokio::net::TcpStream>>;
@@ -102,10 +102,7 @@ impl MssqlConnection {
                     .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
 
                 if is_select {
-                    let mut result = tc
-                        .query(&sql, &[])
-                        .await
-                        .map_err(anyhow::Error::from)?;
+                    let mut result = tc.query(&sql, &[]).await.map_err(anyhow::Error::from)?;
 
                     let columns: Vec<ColumnInfo> = {
                         let cols = result
@@ -142,10 +139,7 @@ impl MssqlConnection {
                     let elapsed = start.elapsed().as_millis();
                     Ok(finalize_query_result(columns, rows, sql, elapsed))
                 } else {
-                    let done = tc
-                        .execute(&sql, &[])
-                        .await
-                        .map_err(anyhow::Error::from)?;
+                    let done = tc.execute(&sql, &[]).await.map_err(anyhow::Error::from)?;
                     let rows_affected: u64 = done.rows_affected().iter().sum();
                     let elapsed = start.elapsed().as_millis();
                     Ok(SqlResult::Modified(dbstudio_core::result::ExecResult {
@@ -201,10 +195,8 @@ impl MssqlConnection {
                     .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
 
                 if is_select {
-                    let param_refs: Vec<&dyn tiberius::ToSql> = params
-                        .iter()
-                        .map(|p| p as &dyn tiberius::ToSql)
-                        .collect();
+                    let param_refs: Vec<&dyn tiberius::ToSql> =
+                        params.iter().map(|p| p as &dyn tiberius::ToSql).collect();
                     let mut result = tc
                         .query(&sql, &param_refs)
                         .await
@@ -245,10 +237,8 @@ impl MssqlConnection {
                     let elapsed = start.elapsed().as_millis();
                     Ok(finalize_query_result(columns, rows, sql, elapsed))
                 } else {
-                    let param_refs: Vec<&dyn tiberius::ToSql> = params
-                        .iter()
-                        .map(|p| p as &dyn tiberius::ToSql)
-                        .collect();
+                    let param_refs: Vec<&dyn tiberius::ToSql> =
+                        params.iter().map(|p| p as &dyn tiberius::ToSql).collect();
                     let done = tc
                         .execute(&sql, &param_refs)
                         .await
@@ -310,20 +300,43 @@ fn extract_tds_cell(row: &tiberius::Row, index: usize) -> ResultCell {
         Some(ColumnData::Bit(v)) => v.map(ResultCell::boolean),
         Some(ColumnData::String(v)) => v.map(ResultCell::text),
         Some(ColumnData::Guid(v)) => v.map(|g| ResultCell::typed(CellType::Uuid, g.to_string())),
-        Some(ColumnData::Binary(v)) => v.as_ref().map(|b| ResultCell::typed(CellType::Binary, format!("0x{}", hex_encode(b)))),
+        Some(ColumnData::Binary(v)) => v
+            .as_ref()
+            .map(|b| ResultCell::typed(CellType::Binary, format!("0x{}", hex_encode(b)))),
         Some(ColumnData::Numeric(v)) => v.map(|v| {
             let approx = v.to_string().parse::<f64>().unwrap_or(0.0);
             ResultCell::decimal(v.to_string(), approx)
         }),
-        Some(ColumnData::Xml(v)) => v.map(|v| ResultCell::typed(CellType::Other, format!("{:?}", v))),
-        Some(ColumnData::DateTime(v)) => v.map(|v| ResultCell::typed(CellType::DateTime, tds_datetime(v.days(), v.seconds_fragments()))),
-        Some(ColumnData::SmallDateTime(v)) => v.map(|v| ResultCell::typed(CellType::DateTime, tds_smalldatetime(v.days(), v.seconds_fragments()))),
-        Some(ColumnData::Date(v)) => v.map(|v| ResultCell::typed(CellType::Date, tds_date(v.days()))),
-        Some(ColumnData::Time(v)) => v.map(|v| ResultCell::typed(CellType::Time, tds_time(v.increments(), v.scale()))),
-        Some(ColumnData::DateTime2(v)) => v.map(|v| ResultCell::typed(CellType::DateTime, tds_datetime2(v.date(), v.time()))),
-        Some(ColumnData::DateTimeOffset(v)) => {
-            v.map(|v| ResultCell::typed(CellType::DateTime, tds_datetimeoffset(v.datetime2(), v.offset())))
+        Some(ColumnData::Xml(v)) => {
+            v.map(|v| ResultCell::typed(CellType::Other, format!("{:?}", v)))
         }
+        Some(ColumnData::DateTime(v)) => v.map(|v| {
+            ResultCell::typed(
+                CellType::DateTime,
+                tds_datetime(v.days(), v.seconds_fragments()),
+            )
+        }),
+        Some(ColumnData::SmallDateTime(v)) => v.map(|v| {
+            ResultCell::typed(
+                CellType::DateTime,
+                tds_smalldatetime(v.days(), v.seconds_fragments()),
+            )
+        }),
+        Some(ColumnData::Date(v)) => {
+            v.map(|v| ResultCell::typed(CellType::Date, tds_date(v.days())))
+        }
+        Some(ColumnData::Time(v)) => {
+            v.map(|v| ResultCell::typed(CellType::Time, tds_time(v.increments(), v.scale())))
+        }
+        Some(ColumnData::DateTime2(v)) => {
+            v.map(|v| ResultCell::typed(CellType::DateTime, tds_datetime2(v.date(), v.time())))
+        }
+        Some(ColumnData::DateTimeOffset(v)) => v.map(|v| {
+            ResultCell::typed(
+                CellType::DateTime,
+                tds_datetimeoffset(v.datetime2(), v.offset()),
+            )
+        }),
         _ => None,
     }
     .unwrap_or_else(ResultCell::null)

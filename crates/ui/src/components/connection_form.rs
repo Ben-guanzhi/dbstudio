@@ -1,24 +1,18 @@
 use dbstudio_core::models::{
-    DatabaseType, ConnectionConfig, Environment, SslMode, SshAuthType, SshConfig,
+    ConnectionConfig, DatabaseType, Environment, SshAuthType, SshConfig, SslMode,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Icon,
-    IconName,
-    IndexPath,
-    StyledExt as _,
-    Sizable as _,
-    WindowExt as _,
     button::{Button, ButtonVariants as _},
     form::{field, v_form},
+    h_flex,
     input::{Input, InputState},
     notification::NotificationType,
     select::{Select, SelectEvent, SelectItem, SelectState},
     switch::Switch,
-    h_flex,
-    v_flex,
+    v_flex, ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
+    WindowExt as _,
 };
 
 use crate::state::{connect_config, delete_connection, save_connection};
@@ -289,13 +283,9 @@ impl ConnectionForm {
             .unwrap_or(DatabaseType::PostgreSQL);
 
         let types = all_types();
-        let selected_index = types
-            .iter()
-            .position(|t| t.0 == initial_type)
-            .unwrap_or(0);
-        let db_type_select = cx.new(|cx| {
-            SelectState::new(types, Some(IndexPath::new(selected_index)), window, cx)
-        });
+        let selected_index = types.iter().position(|t| t.0 == initial_type).unwrap_or(0);
+        let db_type_select =
+            cx.new(|cx| SelectState::new(types, Some(IndexPath::new(selected_index)), window, cx));
         cx.subscribe_in(&db_type_select, window, Self::on_db_type_change)
             .detach();
 
@@ -347,16 +337,17 @@ impl ConnectionForm {
             .detach();
         let ssh_password = Self::text_input(window, cx, "SSH password", true);
         let ssh_key_passphrase = Self::text_input(window, cx, "Key passphrase", true);
-        let extra_params =
-            Self::text_input(window, cx, r#"{"ssl-mode":"require"}"#, false);
+        let extra_params = Self::text_input(window, cx, r#"{"ssl-mode":"require"}"#, false);
 
         // Environment / grouping inputs
-        let initial_env = connection.as_ref().map(|c| c.environment).unwrap_or(Environment::Dev);
+        let initial_env = connection
+            .as_ref()
+            .map(|c| c.environment)
+            .unwrap_or(Environment::Dev);
         let envs = all_environments();
         let env_index = envs.iter().position(|e| e.0 == initial_env).unwrap_or(0);
-        let environment_select = cx.new(|cx| {
-            SelectState::new(envs, Some(IndexPath::new(env_index)), window, cx)
-        });
+        let environment_select =
+            cx.new(|cx| SelectState::new(envs, Some(IndexPath::new(env_index)), window, cx));
         cx.subscribe_in(&environment_select, window, Self::on_env_change)
             .detach();
 
@@ -365,10 +356,12 @@ impl ConnectionForm {
             .map(|c| c.ssl_mode)
             .unwrap_or(SslMode::Disable);
         let ssl_modes = all_ssl_modes();
-        let ssl_index = ssl_modes.iter().position(|m| m.0 == initial_ssl).unwrap_or(0);
-        let ssl_mode_select = cx.new(|cx| {
-            SelectState::new(ssl_modes, Some(IndexPath::new(ssl_index)), window, cx)
-        });
+        let ssl_index = ssl_modes
+            .iter()
+            .position(|m| m.0 == initial_ssl)
+            .unwrap_or(0);
+        let ssl_mode_select =
+            cx.new(|cx| SelectState::new(ssl_modes, Some(IndexPath::new(ssl_index)), window, cx));
         cx.subscribe_in(&ssl_mode_select, window, Self::on_ssl_mode_change)
             .detach();
 
@@ -387,10 +380,7 @@ impl ConnectionForm {
             db_type: initial_type,
             plugin_select,
             plugin_name: initial_plugin,
-            ssh_enabled: connection
-                .as_ref()
-                .map(|c| c.ssh_enabled)
-                .unwrap_or(false),
+            ssh_enabled: connection.as_ref().map(|c| c.ssh_enabled).unwrap_or(false),
             ssh_host,
             ssh_port,
             ssh_username,
@@ -413,9 +403,9 @@ impl ConnectionForm {
         if let Some(c) = connection {
             form.populate_from(c, window, cx);
         } else {
-            form
-                .port
-                .update(cx, |this, cx| this.set_value(initial_type.default_port().to_string(), window, cx));
+            form.port.update(cx, |this, cx| {
+                this.set_value(initial_type.default_port().to_string(), window, cx)
+            });
         }
         form
     }
@@ -428,7 +418,9 @@ impl ConnectionForm {
         cx: &mut Context<Self>,
     ) {
         if let SelectEvent::Confirm(Some(value)) = event {
-            let new_type = (*value).parse::<DatabaseType>().unwrap_or(DatabaseType::Oracle);
+            let new_type = (*value)
+                .parse::<DatabaseType>()
+                .unwrap_or(DatabaseType::Oracle);
             let prev_default = self.db_type.default_port().to_string();
             let current = self.port.read(cx).value().to_string();
             if current.is_empty() || current == prev_default {
@@ -519,23 +511,34 @@ impl ConnectionForm {
         }
 
         if let Some(params) = &connection.extra_params {
-            self.extra_params.update(cx, |this, cx| {
-                this.set_value(params.clone(), window, cx)
-            });
+            self.extra_params
+                .update(cx, |this, cx| this.set_value(params.clone(), window, cx));
         }
 
         if connection.ssh_enabled {
             self.ssh_enabled = true;
             for (input, value) in [
-                (&self.ssh_host, connection.ssh_host.as_deref().unwrap_or_default()),
-                (&self.ssh_username, connection.ssh_username.as_deref().unwrap_or_default()),
-                (&self.ssh_key_path, connection.ssh_key_path.as_deref().unwrap_or_default()),
+                (
+                    &self.ssh_host,
+                    connection.ssh_host.as_deref().unwrap_or_default(),
+                ),
+                (
+                    &self.ssh_username,
+                    connection.ssh_username.as_deref().unwrap_or_default(),
+                ),
+                (
+                    &self.ssh_key_path,
+                    connection.ssh_key_path.as_deref().unwrap_or_default(),
+                ),
             ] {
                 input.update(cx, |this, cx| this.set_value(value.to_string(), window, cx));
             }
             self.ssh_port.update(cx, |this, cx| {
                 this.set_value(
-                    connection.ssh_port.map(|p| p.to_string()).unwrap_or_default(),
+                    connection
+                        .ssh_port
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
                     window,
                     cx,
                 )
@@ -545,10 +548,20 @@ impl ConnectionForm {
         // Environment / grouping
         self.environment = connection.environment;
         let envs = all_environments();
-        let env_index = envs.iter().position(|e| e.0 == connection.environment).unwrap_or(0);
-        self.environment_select.update(cx, |this, cx| this.set_selected_index(Some(IndexPath::new(env_index)), window, cx));
-        let ssl_index = all_ssl_modes().iter().position(|m| m.0 == connection.ssl_mode).unwrap_or(0);
-        self.ssl_mode_select.update(cx, |this, cx| this.set_selected_index(Some(IndexPath::new(ssl_index)), window, cx));
+        let env_index = envs
+            .iter()
+            .position(|e| e.0 == connection.environment)
+            .unwrap_or(0);
+        self.environment_select.update(cx, |this, cx| {
+            this.set_selected_index(Some(IndexPath::new(env_index)), window, cx)
+        });
+        let ssl_index = all_ssl_modes()
+            .iter()
+            .position(|m| m.0 == connection.ssl_mode)
+            .unwrap_or(0);
+        self.ssl_mode_select.update(cx, |this, cx| {
+            this.set_selected_index(Some(IndexPath::new(ssl_index)), window, cx)
+        });
         if let Some(ref select) = self.plugin_select {
             if let Some(ref name) = connection.plugin_name {
                 let plugin_index = PluginOption::all()
@@ -561,14 +574,21 @@ impl ConnectionForm {
             }
         }
         if let Some(ref g) = connection.group {
-            self.group.update(cx, |this, cx| this.set_value(g.clone(), window, cx));
+            self.group
+                .update(cx, |this, cx| this.set_value(g.clone(), window, cx));
         }
         if !connection.tags.is_empty() {
-            self.tags.update(cx, |this, cx| this.set_value(connection.tags.join(", "), window, cx));
+            self.tags.update(cx, |this, cx| {
+                this.set_value(connection.tags.join(", "), window, cx)
+            });
         }
     }
 
-    fn get_config(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<ConnectionConfig> {
+    fn get_config(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ConnectionConfig> {
         let name = self.name.read(cx).value().to_string();
         let host = self.host.read(cx).value().to_string();
         let username = self.username.read(cx).value().to_string();
@@ -620,7 +640,11 @@ impl ConnectionForm {
             ssl_mode: self.ssl_mode,
             group: {
                 let g = self.group.read(cx).value().trim().to_string();
-                if g.is_empty() { None } else { Some(g) }
+                if g.is_empty() {
+                    None
+                } else {
+                    Some(g)
+                }
             },
             tags: {
                 let raw = self.tags.read(cx).value().to_string();
@@ -649,12 +673,7 @@ impl ConnectionForm {
 
         let host = self.ssh_host.read(cx).value().to_string();
         let username = self.ssh_username.read(cx).value().to_string();
-        let port: u16 = self
-            .ssh_port
-            .read(cx)
-            .value()
-            .parse()
-            .unwrap_or(22);
+        let port: u16 = self.ssh_port.read(cx).value().parse().unwrap_or(22);
 
         let (auth_type, key_path) = match self.ssh_auth {
             SshAuthOption::KeyFile => {
@@ -733,9 +752,14 @@ impl ConnectionForm {
         let entity = cx.entity();
         cx.spawn_in(window, async move |_this, cx| {
             let result = async {
-                let conn = dbstudio_db::connect(&config, &password, Some(&ssh_password), Some(&ssh_key_passphrase))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let conn = dbstudio_db::connect(
+                    &config,
+                    &password,
+                    Some(&ssh_password),
+                    Some(&ssh_key_passphrase),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
                 conn.ping().await.map_err(|e| e.to_string())
             }
             .await;
@@ -771,64 +795,54 @@ impl ConnectionForm {
             .columns(2)
             .small()
             .child(
-                field()
-                    .col_span(2)
-                    .label_indent(false)
-                    .child(
-                        Switch::new("ssh-enabled")
-                            .checked(self.ssh_enabled)
-                            .label("Connect through SSH tunnel")
-                            .on_click(cx.listener(|this, checked: &bool, _win, cx| {
-                                this.ssh_enabled = *checked;
-                                cx.notify();
-                            })),
-                    ),
+                field().col_span(2).label_indent(false).child(
+                    Switch::new("ssh-enabled")
+                        .checked(self.ssh_enabled)
+                        .label("Connect through SSH tunnel")
+                        .on_click(cx.listener(|this, checked: &bool, _win, cx| {
+                            this.ssh_enabled = *checked;
+                            cx.notify();
+                        })),
+                ),
             )
             .when(self.ssh_enabled, |f| {
-                f.child(
-                    field()
-                        .label("SSH Host")
-                        .child(Input::new(&self.ssh_host)),
-                )
-                .child(
-                    field()
-                        .label("SSH Port")
-                        .child(Input::new(&self.ssh_port)),
-                )
-                .child(
-                    field()
-                        .col_span(2)
-                        .label("SSH User")
-                        .child(Input::new(&self.ssh_username)),
-                )
-                .child(
-                    field()
-                        .col_span(2)
-                        .label("SSH Auth")
-                        .child(Select::new(&self.ssh_auth_select)),
-                )
-                .when(show_key_fields, |inner| {
-                    inner.child(
+                f.child(field().label("SSH Host").child(Input::new(&self.ssh_host)))
+                    .child(field().label("SSH Port").child(Input::new(&self.ssh_port)))
+                    .child(
                         field()
                             .col_span(2)
-                            .label("Private Key Path")
-                            .child(Input::new(&self.ssh_key_path)),
+                            .label("SSH User")
+                            .child(Input::new(&self.ssh_username)),
                     )
                     .child(
                         field()
                             .col_span(2)
-                            .label("Key Passphrase")
-                            .child(Input::new(&self.ssh_key_passphrase)),
+                            .label("SSH Auth")
+                            .child(Select::new(&self.ssh_auth_select)),
                     )
-                })
-                .when(!show_key_fields, |inner| {
-                    inner.child(
-                        field()
-                            .col_span(2)
-                            .label("SSH Password")
-                            .child(Input::new(&self.ssh_password)),
-                    )
-                })
+                    .when(show_key_fields, |inner| {
+                        inner
+                            .child(
+                                field()
+                                    .col_span(2)
+                                    .label("Private Key Path")
+                                    .child(Input::new(&self.ssh_key_path)),
+                            )
+                            .child(
+                                field()
+                                    .col_span(2)
+                                    .label("Key Passphrase")
+                                    .child(Input::new(&self.ssh_key_passphrase)),
+                            )
+                    })
+                    .when(!show_key_fields, |inner| {
+                        inner.child(
+                            field()
+                                .col_span(2)
+                                .label("SSH Password")
+                                .child(Input::new(&self.ssh_password)),
+                        )
+                    })
             })
     }
 }
@@ -934,16 +948,11 @@ impl Render for ConnectionForm {
                             )
                             .child(
                                 v_flex()
-                                    .child(
-                                        div()
-                                            .text_lg()
-                                            .font_semibold()
-                                            .child(if is_edit {
-                                                "Edit Connection"
-                                            } else {
-                                                "New Connection"
-                                            }),
-                                    )
+                                    .child(div().text_lg().font_semibold().child(if is_edit {
+                                        "Edit Connection"
+                                    } else {
+                                        "New Connection"
+                                    }))
                                     .child(
                                         div()
                                             .text_xs()
@@ -993,16 +1002,8 @@ impl Render for ConnectionForm {
                             .required(true)
                             .child(Input::new(&self.name)),
                     )
-                    .child(
-                        field()
-                            .label("Host")
-                            .child(Input::new(&self.host)),
-                    )
-                    .child(
-                        field()
-                            .label("Port")
-                            .child(Input::new(&self.port)),
-                    )
+                    .child(field().label("Host").child(Input::new(&self.host)))
+                    .child(field().label("Port").child(Input::new(&self.port)))
                     .child(
                         field()
                             .col_span(2)
@@ -1041,11 +1042,7 @@ impl Render for ConnectionForm {
                             .label("SSL Mode")
                             .child(Select::new(&self.ssl_mode_select)),
                     )
-                    .child(
-                        field()
-                            .label("Group")
-                            .child(Input::new(&self.group)),
-                    )
+                    .child(field().label("Group").child(Input::new(&self.group)))
                     .child(
                         field()
                             .col_span(2)

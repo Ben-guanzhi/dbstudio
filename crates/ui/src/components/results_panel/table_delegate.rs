@@ -323,31 +323,45 @@ impl ResultsTableDelegate {
         col_ix: usize,
         cx: &mut Context<TableState<Self>>,
     ) -> AnyElement {
-        let input = self
-            .panel_handle
-            .borrow()
-            .as_ref()
-            .map(|panel| panel.read(cx).editing_input.clone());
+        let panel_state = self.panel_handle.borrow().as_ref().map(|panel| {
+            let p = panel.read(cx);
+            (
+                p.editing_input.clone(),
+                p.editing_fk_select.clone(),
+                p.editing_fk.as_ref().map(|fk| fk.loaded).unwrap_or(false),
+            )
+        });
         let width = self
             .columns
             .get(col_ix)
             .map(|c| c.width)
             .unwrap_or(px(120.0));
         let panel_handle = self.panel_handle.clone();
-        match input {
-            Some(input) => div()
-                .id("cell-edit-input")
-                .h_full()
-                .w(width)
-                .on_key_down(move |event, _window, cx| {
-                    if event.keystroke.key == "escape" {
-                        if let Some(panel) = panel_handle.borrow().clone() {
-                            panel.update(cx, |panel, cx| panel.cancel_cell_edit(cx));
+        match panel_state {
+            Some((input, fk_select, fk_ready)) => {
+                let root = div().id("cell-edit-input").h_full().w(width).on_key_down(
+                    move |event, _window, cx| {
+                        if event.keystroke.key == "escape" {
+                            if let Some(panel) = panel_handle.borrow().clone() {
+                                panel.update(cx, |panel, cx| panel.cancel_cell_edit(cx));
+                            }
                         }
-                    }
-                })
-                .child(Input::new(&input).small())
-                .into_any_element(),
+                    },
+                );
+                // Foreign-key columns get a dropdown of referenced values;
+                // everything else keeps the plain text input.
+                if fk_ready {
+                    root.child(
+                        Select::new(&fk_select)
+                            .small()
+                            .menu_width(px(220.0))
+                            .placeholder("Select value…"),
+                    )
+                    .into_any_element()
+                } else {
+                    root.child(Input::new(&input).small()).into_any_element()
+                }
+            }
             None => Label::new("--").text_sm().into_any_element(),
         }
     }

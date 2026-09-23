@@ -18,6 +18,7 @@ pub enum HeaderEvent {
     ToggleHistory,
     ToggleAi,
     OpenPalette,
+    OpenSettings,
     NewWindow,
 }
 
@@ -155,6 +156,15 @@ impl Render for HeaderBar {
                 cx.emit(HeaderEvent::ToggleAi);
             }));
 
+        let settings_button = Button::new("header-settings")
+            .icon(Icon::new(IconName::Settings))
+            .small()
+            .ghost()
+            .tooltip("Settings")
+            .on_click(cx.listener(|_this, _: &ClickEvent, _window, cx| {
+                cx.emit(HeaderEvent::OpenSettings);
+            }));
+
         let theme_button = Button::new("header-theme")
             .icon(Icon::new(IconName::Sun))
             .small()
@@ -264,6 +274,7 @@ impl Render for HeaderBar {
                     .child(search_button)
                     .child(new_window_button)
                     .child(ai_button)
+                    .child(settings_button)
                     .child(theme_button)
                     .child(toolbar_divider(cx))
                     .child(minimize_button)

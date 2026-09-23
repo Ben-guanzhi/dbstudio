@@ -1,13 +1,10 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Icon,
-    IconName,
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    v_flex,
+    v_flex, ActiveTheme as _, Icon, IconName,
 };
 
 use crate::state::AppState;
@@ -139,13 +136,35 @@ impl CommandPalette {
 
         // Add common commands
         let commands = vec![
-            ("Format SQL", "editor-format", "Format the current SQL query"),
-            ("Toggle Theme", "toggle-theme", "Switch between light and dark theme"),
-            ("Toggle AI Panel", "toggle-ai", "Show or hide the AI assistant panel"),
-            ("Toggle Safe Mode", "toggle-safe-mode", "Require confirmation for all write statements"),
+            (
+                "Format SQL",
+                "editor-format",
+                "Format the current SQL query",
+            ),
+            (
+                "Toggle Theme",
+                "toggle-theme",
+                "Switch between light and dark theme",
+            ),
+            (
+                "Toggle AI Panel",
+                "toggle-ai",
+                "Show or hide the AI assistant panel",
+            ),
+            (
+                "Toggle Safe Mode",
+                "toggle-safe-mode",
+                "Require confirmation for all write statements",
+            ),
             ("Clear History", "clear-history", "Clear query history"),
             ("Export CSV", "export-csv", "Export results as CSV"),
             ("Export JSON", "export-json", "Export results as JSON"),
+            (
+                "Keyboard Shortcuts",
+                "show-help",
+                "Show keyboard shortcuts (F1)",
+            ),
+            ("Settings", "open-settings", "Open application settings"),
         ];
 
         for (label, cmd, detail) in commands {
@@ -160,7 +179,8 @@ impl CommandPalette {
 
     fn filter_items(&mut self, cx: &mut Context<Self>) {
         let query = if self.is_open {
-            self.input_state.read_with(cx, |state: &InputState, _| state.value().to_string())
+            self.input_state
+                .read_with(cx, |state: &InputState, _| state.value().to_string())
         } else {
             String::new()
         };
@@ -288,12 +308,7 @@ impl Render for CommandPalette {
             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.close(cx);
             }))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(gpui::black().opacity(0.5)),
-            )
+            .child(div().absolute().inset_0().bg(gpui::black().opacity(0.5)))
             .child(
                 v_flex()
                     .id("command-palette")
@@ -378,11 +393,7 @@ impl Render for CommandPalette {
                                     .child(
                                         v_flex()
                                             .flex_1()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .child(item.label.clone()),
-                                            )
+                                            .child(div().text_sm().child(item.label.clone()))
                                             .when_some(item.detail.clone(), |this, detail| {
                                                 this.child(
                                                     div()
@@ -392,10 +403,12 @@ impl Render for CommandPalette {
                                                 )
                                             }),
                                     )
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                                        this.selected_index = ix;
-                                        this.confirm_selection(cx);
-                                    }))
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, _window, cx| {
+                                            this.selected_index = ix;
+                                            this.confirm_selection(cx);
+                                        },
+                                    ))
                             })),
                     ),
             )

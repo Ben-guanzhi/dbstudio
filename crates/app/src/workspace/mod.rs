@@ -1,6 +1,6 @@
 use crate::{
-    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, RedoLastEdit,
-    ToggleAiPanel, ToggleComment, UndoLastEdit,
+    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, OpenCommandPalette, OpenSettings,
+    RedoLastEdit, ShowHelp, ToggleAiPanel, ToggleComment, UndoLastEdit,
 };
 use dbstudio_storage::types::ConnectionInfo;
 use dbstudio_ui::components::ai_panel::AiPanel;
@@ -9,16 +9,19 @@ use dbstudio_ui::components::connection_form::{ConnectionForm, ConnectionFormEve
 use dbstudio_ui::components::connection_list::{ConnectionList, ConnectionListEvent};
 use dbstudio_ui::components::footer_bar::{FooterBar, FooterEvent};
 use dbstudio_ui::components::header_bar::{HeaderBar, HeaderEvent};
+use dbstudio_ui::components::help_modal::HelpModal;
 use dbstudio_ui::components::history_panel::{HistoryPanel, HistoryPanelEvent};
 use dbstudio_ui::components::results_panel::ResultsPanel;
+use dbstudio_ui::components::settings_modal::{SettingsEvent, SettingsModal};
 use dbstudio_ui::components::sql_editor::{Editor, EditorEvent};
-use dbstudio_ui::components::tables_tree::{TablesEvent, TablesTree};
+use dbstudio_ui::components::structure_view::StructureView;
+use dbstudio_ui::components::tables_tree::{SelectedTable, TablesEvent, TablesTree};
 use dbstudio_ui::components::tabs::{
     TabClose, TabCloseOthers, TabDuplicateInNewWindow, TabsBar, TabsEvent,
 };
 use dbstudio_ui::state::{
-    connect, delete_connection, execute_query, export_database, import_database, load_table_schema,
-    select_database, AppState, ConnectionStatus,
+    connect, delete_connection, execute_query, export_database, import_database, open_table_object,
+    select_database, set_object_segment, AppState, ConnectionStatus, ObjectSegment,
 };
 use dbstudio_ui::utils::toolbar_divider;
 use gpui::prelude::FluentBuilder as _;
@@ -41,10 +44,13 @@ pub struct Workspace {
     tables: Entity<TablesTree>,
     editor: Entity<Editor>,
     results: Entity<ResultsPanel>,
+    structure: Entity<StructureView>,
     history: Entity<HistoryPanel>,
     ai_panel: Entity<AiPanel>,
     footer: Entity<FooterBar>,
     command_palette: Entity<CommandPalette>,
+    help_modal: Entity<HelpModal>,
+    settings_modal: Entity<SettingsModal>,
     selected_connection: Option<ConnectionInfo>,
     inline_form: bool,
     show_form: bool,
@@ -123,6 +129,9 @@ impl Workspace {
             }
             HeaderEvent::ToggleAi => self.toggle_ai_panel(cx),
             HeaderEvent::OpenPalette => self.open_command_palette(cx),
+            HeaderEvent::OpenSettings => {
+                self.settings_modal.update(cx, |modal, cx| modal.open(cx));
+            }
             HeaderEvent::NewWindow => crate::open_workspace_window(cx),
             HeaderEvent::NewConnection => {
                 if self.is_active {
@@ -158,9 +167,55 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let TablesEvent::TableSelected(table) = event;
-        let table = table.clone();
-        load_table_schema(&table.name, table.schema.as_deref(), self.window_id, cx);
+        match event {
+            TablesEvent::TableSelected(table) => {
+                open_table_object(
+                    &table.name,
+                    table.schema.as_deref(),
+                    ObjectSegment::Data,
+                    self.window_id,
+                    cx,
+                );
+                self.show_table_data(table, window, cx);
+            }
+            TablesEvent::OpenObject { table, segment } => {
+                open_table_object(
+                    &table.name,
+                    table.schema.as_deref(),
+                    *segment,
+                    self.window_id,
+                    cx,
+                );
+                match segment {
+                    ObjectSegment::Structure | ObjectSegment::History => {}
+                    ObjectSegment::Data => self.show_table_data(table, window, cx),
+                    ObjectSegment::Query => {
+                        // Seed the editor with a SELECT; the user runs it.
+                        let query = dbstudio_ui::state::build_select_query(
+                            &table.name,
+                            table.schema.as_deref(),
+                            self.window_id,
+                            cx,
+                        );
+                        self.results.update(cx, |this, cx| {
+                            this.select_table(table.name.clone(), None, cx)
+                        });
+                        self.editor
+                            .update(cx, |this, cx| this.set_query(query, window, cx));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Open `table`'s Data view: seed the editor with a SELECT, point the
+    /// results panel at the table, and execute the query.
+    fn show_table_data(
+        &mut self,
+        table: &SelectedTable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let query = dbstudio_ui::state::build_select_query(
             &table.name,
             table.schema.as_deref(),
@@ -218,7 +273,13 @@ impl Workspace {
                     .iter()
                     .find(|t| t.name == table)
                     .and_then(|t| t.schema.clone());
-                load_table_schema(&table, schema.as_deref(), self.window_id, cx);
+                open_table_object(
+                    &table,
+                    schema.as_deref(),
+                    ObjectSegment::Data,
+                    self.window_id,
+                    cx,
+                );
                 let query = dbstudio_ui::state::build_select_query(
                     &table,
                     schema.as_deref(),
@@ -252,11 +313,36 @@ impl Workspace {
                 "export-json" => {
                     self.results.update(cx, |this, cx| this.export_json(cx));
                 }
+                "show-help" => {
+                    self.help_modal.update(cx, |modal, cx| modal.open(cx));
+                }
+                "open-settings" => {
+                    self.settings_modal.update(cx, |modal, cx| modal.open(cx));
+                }
                 _ => {}
             },
             CommandPaletteEvent::Close => {
                 self.command_palette.update(cx, |palette, cx| {
                     palette.close(cx);
+                });
+            }
+        }
+    }
+
+    fn on_settings_event(
+        &mut self,
+        _: &Entity<SettingsModal>,
+        event: &SettingsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SettingsEvent::ToggleTheme => {
+                crate::themes::toggle_color_mode(Some(window), cx);
+            }
+            SettingsEvent::ToggleVim => {
+                self.editor.update(cx, |editor, cx| {
+                    editor.toggle_vim(window, cx);
                 });
             }
         }
@@ -423,10 +509,13 @@ impl Workspace {
         let tables = TablesTree::view(window, cx);
         let editor = Editor::view(window, cx);
         let results = ResultsPanel::view(window, cx);
+        let structure = StructureView::view(window, cx);
         let history = HistoryPanel::view(window, cx);
         let ai_panel = AiPanel::view(window, cx);
         let footer = FooterBar::view(window, cx);
         let command_palette = CommandPalette::view(window, cx);
+        let help_modal = HelpModal::view(cx);
+        let settings_modal = SettingsModal::view(cx);
 
         cx.subscribe_in(&header, window, Self::on_header_event)
             .detach();
@@ -438,6 +527,8 @@ impl Workspace {
         cx.subscribe_in(&editor, window, Self::on_editor_event)
             .detach();
         cx.subscribe_in(&command_palette, window, Self::on_command_palette_event)
+            .detach();
+        cx.subscribe_in(&settings_modal, window, Self::on_settings_event)
             .detach();
         cx.subscribe_in(&footer, window, Self::on_footer_event)
             .detach();
@@ -468,10 +559,13 @@ impl Workspace {
             tables,
             editor,
             results,
+            structure,
             history,
             ai_panel,
             footer,
             command_palette,
+            help_modal,
+            settings_modal,
             selected_connection: None,
             inline_form: false,
             show_form: false,
@@ -599,10 +693,19 @@ impl Render for Workspace {
             }
         }
 
-        root = root.child(self.command_palette.clone());
+        root = root
+            .child(self.command_palette.clone())
+            .child(self.help_modal.clone())
+            .child(self.settings_modal.clone());
 
         root.on_action(cx.listener(|this, _: &OpenCommandPalette, _window, cx| {
             this.open_command_palette(cx);
+        }))
+        .on_action(cx.listener(|this, _: &ShowHelp, _window, cx| {
+            this.help_modal.update(cx, |modal, cx| modal.toggle(cx));
+        }))
+        .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| {
+            this.settings_modal.update(cx, |modal, cx| modal.toggle(cx));
         }))
         .on_action(cx.listener(|this, _: &FormatSql, window, cx| {
             this.editor.update(cx, |editor, cx| {
