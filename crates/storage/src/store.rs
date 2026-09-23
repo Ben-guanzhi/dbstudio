@@ -16,9 +16,7 @@ pub struct AppStore {
 
 impl AppStore {
     pub async fn singleton() -> Result<&'static Self> {
-        STORE
-            .get_or_try_init(|| async { Self::new().await })
-            .await
+        STORE.get_or_try_init(|| async { Self::new().await }).await
     }
 
     async fn new() -> Result<Self> {
@@ -166,9 +164,9 @@ impl AppStore {
     async fn ensure_column(pool: &Pool<Sqlite>, name: &str, ddl: &str) -> Result<()> {
         let (n,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name = ?1")
-        .bind(name)
-        .fetch_one(pool)
-        .await?;
+                .bind(name)
+                .fetch_one(pool)
+                .await?;
         if n == 0 {
             sqlx::query(&format!("ALTER TABLE connections ADD COLUMN {name} {ddl}"))
                 .execute(pool)

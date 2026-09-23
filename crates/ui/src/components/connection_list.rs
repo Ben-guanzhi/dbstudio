@@ -5,15 +5,10 @@ use dbstudio_storage::types::ConnectionInfo;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Icon,
-    IconName,
-    StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    Sizable as _,
-    v_flex,
+    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -38,15 +33,11 @@ impl ConnectionList {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
         let group_input = {
             let window = &mut *window;
-            cx.new(move |cx| {
-                InputState::new(window, cx).placeholder("Group (optional)")
-            })
+            cx.new(move |cx| InputState::new(window, cx).placeholder("Group (optional)"))
         };
         let tags_input = {
             let window = &mut *window;
-            cx.new(move |cx| {
-                InputState::new(window, cx).placeholder("Tags, comma separated")
-            })
+            cx.new(move |cx| InputState::new(window, cx).placeholder("Tags, comma separated"))
         };
         cx.new(|cx| ConnectionList::new(cx, group_input, tags_input, &*window))
     }
@@ -57,23 +48,21 @@ impl ConnectionList {
         tags_input: Entity<InputState>,
         window: &Window,
     ) -> Self {
-        let mut _subscriptions = vec![
-            cx.observe_global::<AppState>(move |this, cx| {
-                let state = cx.global::<AppState>();
-                this.connections = state.saved_connections.clone();
-                if let Some(selected) = &this.selected_id {
-                    if !this.connections.iter().any(|c| &c.id == selected) {
-                        this.selected_id = None;
-                    }
+        let mut _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
+            let state = cx.global::<AppState>();
+            this.connections = state.saved_connections.clone();
+            if let Some(selected) = &this.selected_id {
+                if !this.connections.iter().any(|c| &c.id == selected) {
+                    this.selected_id = None;
                 }
-                if let Some(editing) = &this.editing_id {
-                    if !this.connections.iter().any(|c| &c.id == editing) {
-                        this.editing_id = None;
-                    }
+            }
+            if let Some(editing) = &this.editing_id {
+                if !this.connections.iter().any(|c| &c.id == editing) {
+                    this.editing_id = None;
                 }
-                cx.notify();
-            }),
-        ];
+            }
+            cx.notify();
+        })];
 
         _subscriptions.extend([
             cx.subscribe_in(&group_input, window, Self::on_tag_input_event),
@@ -191,7 +180,12 @@ impl ConnectionList {
         cx.notify();
     }
 
-    fn render_item(&mut self, ix: usize, info: &ConnectionInfo, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_item(
+        &mut self,
+        ix: usize,
+        info: &ConnectionInfo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let is_selected = self.selected_id.as_deref() == Some(info.id.as_str());
         let text_color = if is_selected {
             cx.theme().accent_foreground
@@ -229,7 +223,9 @@ impl ConnectionList {
             .bg(bg_color)
             .border_1()
             .border_color(bg_color)
-            .when(is_selected, |this| this.border_color(cx.theme().list_active_border))
+            .when(is_selected, |this| {
+                this.border_color(cx.theme().list_active_border)
+            })
             .rounded(cx.theme().radius)
             .cursor_pointer()
             .child(
@@ -259,9 +255,7 @@ impl ConnectionList {
                             .child(detail),
                     ),
             )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.on_select(&info, window, cx)
-            }))
+            .on_click(cx.listener(move |this, _, window, cx| this.on_select(&info, window, cx)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _: &MouseDownEvent, window, cx| {
@@ -270,7 +264,11 @@ impl ConnectionList {
             )
     }
 
-    fn render_edit_item(&mut self, info: &ConnectionInfo, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_edit_item(
+        &mut self,
+        info: &ConnectionInfo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let env = info.environment;
         v_flex()
             .id(("conn-edit", 0usize))
@@ -286,16 +284,19 @@ impl ConnectionList {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_semibold()
-                            .child(info.name.clone()),
-                    )
+                    .child(div().text_sm().font_semibold().child(info.name.clone()))
                     .child(self.env_badge(env, cx)),
             )
-            .child(Input::new(&self.group_input).flex_1().rounded(cx.theme().radius))
-            .child(Input::new(&self.tags_input).flex_1().rounded(cx.theme().radius))
+            .child(
+                Input::new(&self.group_input)
+                    .flex_1()
+                    .rounded(cx.theme().radius),
+            )
+            .child(
+                Input::new(&self.tags_input)
+                    .flex_1()
+                    .rounded(cx.theme().radius),
+            )
             .child(
                 h_flex()
                     .gap_1()
@@ -394,9 +395,13 @@ impl Render for ConnectionList {
                         this.toggle_group(&group, cx);
                     }))
                     .child(
-                        Icon::new(if is_collapsed { IconName::ChevronRight } else { IconName::ChevronDown })
-                            .size_3()
-                            .text_color(cx.theme().muted_foreground),
+                        Icon::new(if is_collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size_3()
+                        .text_color(cx.theme().muted_foreground),
                     )
                     .child(
                         div()

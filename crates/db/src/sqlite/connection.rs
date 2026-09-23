@@ -1,4 +1,4 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use async_lock::Mutex;
 use dbstudio_core::models::ConnectionConfig;
 use dbstudio_core::result::{ResultCell, SqlResult};
@@ -25,12 +25,10 @@ fn row_to_cells(row: &rusqlite::Row, count: usize) -> Vec<ResultCell> {
             Ok(ValueRef::Text(bytes)) => {
                 ResultCell::text(String::from_utf8_lossy(bytes).into_owned())
             }
-            Ok(ValueRef::Blob(bytes)) => {
-                ResultCell::typed(
-                    dbstudio_core::result::CellType::Blob,
-                    format!("blob[{} bytes]", bytes.len()),
-                )
-            }
+            Ok(ValueRef::Blob(bytes)) => ResultCell::typed(
+                dbstudio_core::result::CellType::Blob,
+                format!("blob[{} bytes]", bytes.len()),
+            ),
             Err(_) => ResultCell::text("[error]"),
         };
         cells.push(cell);
@@ -71,7 +69,9 @@ impl SqliteConnection {
         let conn = self.conn.clone();
         smol::unblock(move || {
             let guard = conn.lock_blocking();
-            let c = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
             c.execute_batch("SELECT 1")?;
             Ok(())
         })
@@ -85,7 +85,9 @@ impl SqliteConnection {
 
         smol::unblock(move || {
             let guard = conn.lock_blocking();
-            let c = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
 
             if is_select_query(&sql, &["PRAGMA", "EXPLAIN"]) {
                 let mut stmt = c.prepare(&sql)?;

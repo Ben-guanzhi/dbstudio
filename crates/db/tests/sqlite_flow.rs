@@ -1,4 +1,4 @@
-use dbstudio_core::models::{DatabaseType, ConnectionConfig};
+use dbstudio_core::models::{ConnectionConfig, DatabaseType};
 use dbstudio_core::result::SqlResult;
 
 fn temp_db_path(name: &str) -> String {
@@ -43,11 +43,15 @@ fn sqlite_full_flow() {
     let config = sqlite_config(&path);
 
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&config, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
         conn.ping().await.expect("ping");
 
         // DDL + DML round trip
-        let missing = dbstudio_db::list_columns(&conn, "people", None).await.expect("columns");
+        let missing = dbstudio_db::list_columns(&conn, "people", None)
+            .await
+            .expect("columns");
         assert!(missing.is_empty(), "missing table should yield no columns");
 
         let _ = conn
@@ -78,16 +82,23 @@ fn sqlite_full_flow() {
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "people");
 
-        let columns = dbstudio_db::list_columns(&conn, "people", None).await.expect("columns");
+        let columns = dbstudio_db::list_columns(&conn, "people", None)
+            .await
+            .expect("columns");
         assert_eq!(columns.len(), 2);
         assert_eq!(columns[0].name, "id");
         assert!(columns[0].is_primary_key, "id should be PK");
 
-        let _indexes = dbstudio_db::list_indexes(&conn, "people", None).await.expect("indexes");
+        let _indexes = dbstudio_db::list_indexes(&conn, "people", None)
+            .await
+            .expect("indexes");
 
         let create_sql = dbstudio_db::get_create_table_sql(&conn, "people", None).await;
         assert!(create_sql.is_ok());
-        assert!(create_sql.unwrap_or_default().to_lowercase().contains("people"));
+        assert!(create_sql
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("people"));
 
         // Error path
         let err = conn.execute("SELECT * FROM missing_table").await;
@@ -101,7 +112,9 @@ fn sqlite_switch_database_and_current() {
     let second = temp_db_path("second.db");
     let config = sqlite_config(&first);
     smol::block_on(async {
-        let conn = dbstudio_db::connect(&config, "", None, None).await.expect("connect");
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
         assert_eq!(conn.current_database().await.unwrap_or_default(), first);
 
         conn.switch_database(&second).await.expect("switch");

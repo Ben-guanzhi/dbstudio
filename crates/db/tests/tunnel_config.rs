@@ -54,7 +54,11 @@ fn ssh_tunnel_key_auth_requires_key_path() {
     config.ssh_auth_type = Some("key_file".to_string());
 
     let err = SshTunnel::prepare(&config).unwrap_err().to_string();
-    assert!(err.contains("private key path"), "unexpected error: {}", err);
+    assert!(
+        err.contains("private key path"),
+        "unexpected error: {}",
+        err
+    );
 
     config.ssh_key_path = Some("~/.ssh/id_ed25519".to_string());
     let tunnel = SshTunnel::prepare(&config)
@@ -76,7 +80,9 @@ fn ssh_tunnel_open_reports_connection_failure() {
         .expect("prepare")
         .expect("tunnel");
 
-    let err = smol::block_on(tunnel.open(Some("secret"), None)).unwrap_err().to_string();
+    let err = smol::block_on(tunnel.open(Some("secret"), None))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("failed to connect to SSH server"),
         "unexpected error: {}",
@@ -97,7 +103,8 @@ fn sqlite_connect_ignores_ssh_settings() {
     config.ssh_host = Some("bastion.example.com".to_string());
     config.ssh_username = Some("deploy".to_string());
 
-    let conn = smol::block_on(dbstudio_db::connect(&config, "", None, None)).expect("sqlite connect");
+    let conn =
+        smol::block_on(dbstudio_db::connect(&config, "", None, None)).expect("sqlite connect");
     assert!(smol::block_on(conn.ping()).is_ok());
 }
 

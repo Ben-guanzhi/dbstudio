@@ -134,7 +134,11 @@ pub async fn export_database(
     // Write header
     writeln!(file, "-- dbstudio SQL dump")?;
     writeln!(file, "-- Database: {}", conn.current_database().await?)?;
-    writeln!(file, "-- Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"))?;
+    writeln!(
+        file,
+        "-- Generated: {}",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+    )?;
     writeln!(file)?;
 
     let tables_total = tables.len();
@@ -170,40 +174,38 @@ pub async fn export_database(
 
             if let SqlResult::Query(q) = conn.execute(&select_sql).await? {
                 stats.rows_exported += q.rows.len();
-                    stats.tables_exported += 1;
+                stats.tables_exported += 1;
 
-                    if !q.rows.is_empty() {
-                        // Get column names
-                        let columns: Vec<String> = q.columns.iter().map(|c| c.name.clone()).collect();
-                        let quoted_columns: Vec<String> = columns
+                if !q.rows.is_empty() {
+                    // Get column names
+                    let columns: Vec<String> = q.columns.iter().map(|c| c.name.clone()).collect();
+                    let quoted_columns: Vec<String> =
+                        columns.iter().map(|c| quote_ident(&db_type, c)).collect();
+
+                    // Generate INSERT statements
+                    for row in &q.rows {
+                        let values: Vec<String> = row
                             .iter()
-                            .map(|c| quote_ident(&db_type, c))
+                            .map(|cell| {
+                                if cell.is_null {
+                                    "NULL".to_string()
+                                } else {
+                                    crate::utils::quote_string_literal(&cell.value)
+                                }
+                            })
                             .collect();
 
-                        // Generate INSERT statements
-                        for row in &q.rows {
-                            let values: Vec<String> = row
-                                .iter()
-                                .map(|cell| {
-                                    if cell.is_null {
-                                        "NULL".to_string()
-                                    } else {
-                                        crate::utils::quote_string_literal(&cell.value)
-                                    }
-                                })
-                                .collect();
-
-                            writeln!(
-                                file,
-                                "INSERT INTO {} ({}) VALUES ({});",
-                                qualified,
-                                quoted_columns.join(", "),
-                                values.join(", ")
-                            )?;
-                        }
-                        writeln!(file)?;
+                        writeln!(
+                            file,
+                            "INSERT INTO {} ({}) VALUES ({});",
+                            qualified,
+                            quoted_columns.join(", "),
+                            values.join(", ")
+                        )?;
                     }
+                    writeln!(file)?;
                 }
+            }
         }
     }
 
@@ -317,11 +319,26 @@ mod tests {
             expected: &'static str,
         }
         let cases = [
-            Case { db: DatabaseType::SQLite, expected: "`items`" },
-            Case { db: DatabaseType::MySQL, expected: "`items`" },
-            Case { db: DatabaseType::PostgreSQL, expected: "\"items\"" },
-            Case { db: DatabaseType::Oracle, expected: "\"items\"" },
-            Case { db: DatabaseType::MSSQL, expected: "[items]" },
+            Case {
+                db: DatabaseType::SQLite,
+                expected: "`items`",
+            },
+            Case {
+                db: DatabaseType::MySQL,
+                expected: "`items`",
+            },
+            Case {
+                db: DatabaseType::PostgreSQL,
+                expected: "\"items\"",
+            },
+            Case {
+                db: DatabaseType::Oracle,
+                expected: "\"items\"",
+            },
+            Case {
+                db: DatabaseType::MSSQL,
+                expected: "[items]",
+            },
         ];
         for case in cases {
             assert_eq!(quote_ident(&case.db, "items"), case.expected);

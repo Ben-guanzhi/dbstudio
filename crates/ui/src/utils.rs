@@ -3,11 +3,7 @@ use gpui_component::ActiveTheme as _;
 
 /// A thin vertical divider for toolbars.
 pub fn toolbar_divider(cx: &App) -> impl IntoElement {
-    div()
-        .w(px(1.0))
-        .h(px(16.0))
-        .mx_1()
-        .bg(cx.theme().border)
+    div().w(px(1.0)).h(px(16.0)).mx_1().bg(cx.theme().border)
 }
 
 /// Truncate a string to a maximum number of characters, ensuring UTF-8 safety.

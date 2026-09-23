@@ -166,7 +166,11 @@ impl ResultCell {
     }
 
     pub fn value_if_not_null(&self) -> Option<String> {
-        if self.is_null { None } else { Some(self.value.clone()) }
+        if self.is_null {
+            None
+        } else {
+            Some(self.value.clone())
+        }
     }
 
     /// Whether the cell carries a numeric orderable proxy.
@@ -314,7 +318,12 @@ mod tests {
     #[test]
     fn null_payload_is_ignored_by_row_accessors() {
         let row = vec![
-            ResultCell { value: "42".to_string(), is_null: true, kind: CellType::Other, sort_value: None },
+            ResultCell {
+                value: "42".to_string(),
+                is_null: true,
+                kind: CellType::Other,
+                sort_value: None,
+            },
             ResultCell::text(""),
             ResultCell::text("42"),
         ];
@@ -344,7 +353,10 @@ mod tests {
 
     #[test]
     fn value_if_not_null_filters_nulls() {
-        assert_eq!(ResultCell::text("x").value_if_not_null().as_deref(), Some("x"));
+        assert_eq!(
+            ResultCell::text("x").value_if_not_null().as_deref(),
+            Some("x")
+        );
         assert_eq!(ResultCell::null().value_if_not_null(), None);
     }
 
@@ -359,8 +371,14 @@ mod tests {
             sql: "SELECT DB_NAME()".to_string(),
             truncated: false,
         });
-        assert_eq!(query.first_cell().map(|c| c.value.as_str()), Some("db_name"));
-        assert_eq!(query.first_row().map(|r| r.cell_str(1)), Some("extra".to_string()));
+        assert_eq!(
+            query.first_cell().map(|c| c.value.as_str()),
+            Some("db_name")
+        );
+        assert_eq!(
+            query.first_row().map(|r| r.cell_str(1)),
+            Some("extra".to_string())
+        );
 
         let empty = SqlResult::Query(QueryResult::empty("SELECT 1"));
         assert!(empty.first_cell().is_none());
@@ -379,13 +397,34 @@ mod tests {
     #[test]
     fn sort_cmp_orders_by_type_and_null_last() {
         use std::cmp::Ordering;
-        assert_eq!(ResultCell::integer(2).sort_cmp(&ResultCell::integer(10)), Ordering::Less);
-        assert_eq!(ResultCell::float(2.5).sort_cmp(&ResultCell::float(1.5)), Ordering::Greater);
-        assert_eq!(ResultCell::integer(2).sort_cmp(&ResultCell::float(2.0)), Ordering::Equal);
-        assert_eq!(ResultCell::text("a").sort_cmp(&ResultCell::text("b")), Ordering::Less);
-        assert_eq!(ResultCell::null().sort_cmp(&ResultCell::integer(1)), Ordering::Greater);
-        assert_eq!(ResultCell::integer(1).sort_cmp(&ResultCell::null()), Ordering::Less);
-        assert_eq!(ResultCell::null().sort_cmp(&ResultCell::null()), Ordering::Equal);
+        assert_eq!(
+            ResultCell::integer(2).sort_cmp(&ResultCell::integer(10)),
+            Ordering::Less
+        );
+        assert_eq!(
+            ResultCell::float(2.5).sort_cmp(&ResultCell::float(1.5)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            ResultCell::integer(2).sort_cmp(&ResultCell::float(2.0)),
+            Ordering::Equal
+        );
+        assert_eq!(
+            ResultCell::text("a").sort_cmp(&ResultCell::text("b")),
+            Ordering::Less
+        );
+        assert_eq!(
+            ResultCell::null().sort_cmp(&ResultCell::integer(1)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            ResultCell::integer(1).sort_cmp(&ResultCell::null()),
+            Ordering::Less
+        );
+        assert_eq!(
+            ResultCell::null().sort_cmp(&ResultCell::null()),
+            Ordering::Equal
+        );
     }
 
     #[test]

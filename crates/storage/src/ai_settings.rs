@@ -30,16 +30,15 @@ pub fn set_ai_api_key(key: &str) -> Result<()> {
 
 /// Load the persisted AI config, overlaying the keyring-stored API key.
 pub async fn load_ai_config(pool: &Pool<Sqlite>) -> LlmConfig {
-    let mut config = match sqlx::query_as::<_, (String,)>(
-        "SELECT value FROM settings WHERE key = ?1",
-    )
-    .bind(AI_CONFIG_KEY)
-    .fetch_optional(pool)
-    .await
-    {
-        Ok(Some((json,))) => serde_json::from_str::<LlmConfig>(&json).unwrap_or_default(),
-        _ => LlmConfig::default(),
-    };
+    let mut config =
+        match sqlx::query_as::<_, (String,)>("SELECT value FROM settings WHERE key = ?1")
+            .bind(AI_CONFIG_KEY)
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(Some((json,))) => serde_json::from_str::<LlmConfig>(&json).unwrap_or_default(),
+            _ => LlmConfig::default(),
+        };
     let key = get_ai_api_key();
     config.api_key = if key.is_empty() { None } else { Some(key) };
     config
@@ -115,7 +114,10 @@ mod tests {
 
             let loaded = load_ai_config(&pool).await;
             assert_eq!(loaded.provider, "ollama");
-            assert_eq!(loaded.base_url.as_deref(), Some("http://localhost:11434/v1"));
+            assert_eq!(
+                loaded.base_url.as_deref(),
+                Some("http://localhost:11434/v1")
+            );
             assert_eq!(loaded.model.as_deref(), Some("llama3.1"));
             assert_eq!(loaded.api_key.as_deref(), Some("top-secret"));
 

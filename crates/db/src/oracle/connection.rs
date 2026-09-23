@@ -1,4 +1,4 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use async_lock::Mutex;
 use dbstudio_core::models::ConnectionConfig;
 use dbstudio_core::result::{ResultCell, SqlResult};
@@ -55,7 +55,9 @@ impl OracleConnection {
         let conn = self.conn.clone();
         smol::unblock(move || {
             let guard = conn.lock_blocking();
-            let c = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
 
             let is_select = is_select_query(&sql_string, &["DESCRIBE"]);
 
@@ -69,11 +71,7 @@ impl OracleConnection {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| {
-                        ColumnInfo::new(
-                            c.name().to_string(),
-                            c.oracle_type().to_string(),
-                            i as u32,
-                        )
+                        ColumnInfo::new(c.name().to_string(), c.oracle_type().to_string(), i as u32)
                     })
                     .collect();
 
@@ -112,7 +110,9 @@ impl OracleConnection {
         let conn = self.conn.clone();
         smol::unblock(move || {
             let guard = conn.lock_blocking();
-            let c = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
             f(c).map_err(|e| anyhow::anyhow!("Oracle error: {}", e))?;
             Ok(())
         })
@@ -137,7 +137,9 @@ impl OracleConnection {
         let conn = self.conn.clone();
         smol::unblock(move || {
             let guard = conn.lock_blocking();
-            let c = guard.as_ref().ok_or_else(|| anyhow::anyhow!("Not connected"))?;
+            let c = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Not connected"))?;
 
             let is_select = is_select_query(&sql_string, &["DESCRIBE"]);
 
@@ -155,11 +157,7 @@ impl OracleConnection {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| {
-                        ColumnInfo::new(
-                            c.name().to_string(),
-                            c.oracle_type().to_string(),
-                            i as u32,
-                        )
+                        ColumnInfo::new(c.name().to_string(), c.oracle_type().to_string(), i as u32)
                     })
                     .collect();
 

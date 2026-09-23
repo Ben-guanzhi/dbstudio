@@ -35,16 +35,36 @@ pub struct VimStep {
 
 impl VimStep {
     fn moved(caret: usize) -> Self {
-        VimStep { text: None, caret, selection: None, to_insert: false }
+        VimStep {
+            text: None,
+            caret,
+            selection: None,
+            to_insert: false,
+        }
     }
     fn selection(caret: usize, sel: (usize, usize)) -> Self {
-        VimStep { text: None, caret, selection: Some(sel), to_insert: false }
+        VimStep {
+            text: None,
+            caret,
+            selection: Some(sel),
+            to_insert: false,
+        }
     }
     fn replaced(text: String, caret: usize) -> Self {
-        VimStep { text: Some(text), caret, selection: None, to_insert: false }
+        VimStep {
+            text: Some(text),
+            caret,
+            selection: None,
+            to_insert: false,
+        }
     }
     fn insert_mode(text: Option<String>, caret: usize) -> Self {
-        VimStep { text, caret, selection: None, to_insert: true }
+        VimStep {
+            text,
+            caret,
+            selection: None,
+            to_insert: true,
+        }
     }
 }
 
@@ -94,15 +114,25 @@ fn byte_after(text: &str, byte: usize) -> usize {
 }
 
 fn newline_positions(text: &str) -> Vec<usize> {
-    text.bytes().enumerate().filter(|(_, b)| *b == b'\n').map(|(i, _)| i).collect()
+    text.bytes()
+        .enumerate()
+        .filter(|(_, b)| *b == b'\n')
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn line_starts(text: &str) -> Vec<usize> {
-    std::iter::once(0).chain(newline_positions(text).iter().map(|p| p + 1)).collect()
+    std::iter::once(0)
+        .chain(newline_positions(text).iter().map(|p| p + 1))
+        .collect()
 }
 
 fn lines(text: &str) -> usize {
-    if text.is_empty() { 1 } else { newline_positions(text).len() + 1 }
+    if text.is_empty() {
+        1
+    } else {
+        newline_positions(text).len() + 1
+    }
 }
 
 fn line_of(text: &str, byte: usize) -> usize {
@@ -116,14 +146,22 @@ fn line_of(text: &str, byte: usize) -> usize {
 /// end of buffer for the last line).
 fn line_content_end(text: &str, line: usize) -> usize {
     let starts = line_starts(text);
-    if line + 1 < starts.len() { starts[line + 1] - 1 } else { text.len() }
+    if line + 1 < starts.len() {
+        starts[line + 1] - 1
+    } else {
+        text.len()
+    }
 }
 
 /// Byte offset of the last content character of `line`.
 fn line_last_char(text: &str, line: usize) -> usize {
     let start = line_starts(text)[line];
     let end = line_content_end(text, line);
-    if end > start { move_left(text, end) } else { start }
+    if end > start {
+        move_left(text, end)
+    } else {
+        start
+    }
 }
 
 fn first_non_ws(text: &str, line: usize) -> usize {
@@ -151,30 +189,45 @@ fn byte_for_col(text: &str, line: usize, col: usize) -> usize {
 
 fn move_line(text: &str, caret: usize, delta: isize, col: usize) -> Option<usize> {
     let current = line_of(text, caret) as isize + delta;
-    if current < 0 { return None; }
+    if current < 0 {
+        return None;
+    }
     let target = current as usize;
-    if target >= lines(text) { return None; }
+    if target >= lines(text) {
+        return None;
+    }
     Some(byte_for_col(text, target, col))
 }
 
 fn move_left(text: &str, caret: usize) -> usize {
-    char_offsets(text).iter().rev().find(|p| **p < caret).copied().unwrap_or(caret)
+    char_offsets(text)
+        .iter()
+        .rev()
+        .find(|p| **p < caret)
+        .copied()
+        .unwrap_or(caret)
 }
 
 fn move_right(text: &str, caret: usize) -> usize {
-    if caret >= text.len() { return caret; }
+    if caret >= text.len() {
+        return caret;
+    }
     byte_after(text, caret)
 }
 
 fn move_left_n(text: &str, caret: usize, n: usize) -> usize {
     let mut c = caret;
-    for _ in 0..n { c = move_left(text, c); }
+    for _ in 0..n {
+        c = move_left(text, c);
+    }
     c
 }
 
 fn move_right_n(text: &str, caret: usize, n: usize) -> usize {
     let mut c = caret;
-    for _ in 0..n { c = move_right(text, c); }
+    for _ in 0..n {
+        c = move_right(text, c);
+    }
     c
 }
 
@@ -184,10 +237,19 @@ fn is_word(c: char) -> bool {
 
 fn next_word_start(text: &str, caret: usize, big: bool) -> usize {
     let chars = char_offsets(text);
-    if chars.is_empty() { return 0; }
+    if chars.is_empty() {
+        return 0;
+    }
     let ws = |c: char| c.is_whitespace();
-    let word = if big { |c: char| !c.is_whitespace() } else { |c: char| is_word(c) };
-    let mut i = chars.iter().position(|p| *p >= caret).unwrap_or(chars.len());
+    let word = if big {
+        |c: char| !c.is_whitespace()
+    } else {
+        |c: char| is_word(c)
+    };
+    let mut i = chars
+        .iter()
+        .position(|p| *p >= caret)
+        .unwrap_or(chars.len());
     if i < chars.len() && !ws(text[chars[i]..].chars().next().unwrap()) {
         while i < chars.len() && word(text[chars[i]..].chars().next().unwrap()) {
             i += 1;
@@ -201,12 +263,21 @@ fn next_word_start(text: &str, caret: usize, big: bool) -> usize {
 
 fn prev_word_start(text: &str, caret: usize, big: bool) -> usize {
     let chars = char_offsets(text);
-    if chars.is_empty() { return 0; }
+    if chars.is_empty() {
+        return 0;
+    }
     let ws = |c: char| c.is_whitespace();
-    let word = if big { |c: char| !c.is_whitespace() } else { |c: char| is_word(c) };
+    let word = if big {
+        |c: char| !c.is_whitespace()
+    } else {
+        |c: char| is_word(c)
+    };
     // Point at the character before the caret (or 0 when the caret is at the
     // start of the buffer).
-    let mut i = chars.iter().position(|p| *p >= caret).unwrap_or(chars.len());
+    let mut i = chars
+        .iter()
+        .position(|p| *p >= caret)
+        .unwrap_or(chars.len());
     i = i.saturating_sub(1);
     // Skip whitespace, then the word run; `i` ends at the index just before
     // the previous word, which is where its first char sits.
@@ -228,11 +299,22 @@ fn prev_word_start(text: &str, caret: usize, big: bool) -> usize {
 /// Byte right after the last char of the word at or ahead of `caret`.
 fn next_word_end(text: &str, caret: usize, big: bool) -> usize {
     let chars = char_offsets(text);
-    if chars.is_empty() { return 0; }
+    if chars.is_empty() {
+        return 0;
+    }
     let ws = |c: char| c.is_whitespace();
-    let word = if big { |c: char| !c.is_whitespace() } else { |c: char| is_word(c) };
-    let mut i = chars.iter().position(|p| *p >= caret).unwrap_or(chars.len());
-    if i >= chars.len() { return text.len(); }
+    let word = if big {
+        |c: char| !c.is_whitespace()
+    } else {
+        |c: char| is_word(c)
+    };
+    let mut i = chars
+        .iter()
+        .position(|p| *p >= caret)
+        .unwrap_or(chars.len());
+    if i >= chars.len() {
+        return text.len();
+    }
     if ws(text[chars[i]..].chars().next().unwrap()) {
         while i < chars.len() && ws(text[chars[i]..].chars().next().unwrap_or(' ')) {
             i += 1;
@@ -249,11 +331,17 @@ fn next_word_end(text: &str, caret: usize, big: bool) -> usize {
 // ---------- geometry done ----------
 
 fn byte_for_char_pos(text: &str, cp: usize) -> usize {
-    text.char_indices().nth(cp).map(|(i, _)| i).unwrap_or(text.len())
+    text.char_indices()
+        .nth(cp)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len())
 }
 
 fn col_to_byte_relative(line: &str, col: usize) -> usize {
-    line.char_indices().nth(col).map(|(i, _)| i).unwrap_or(line.len())
+    line.char_indices()
+        .nth(col)
+        .map(|(i, _)| i)
+        .unwrap_or(line.len())
 }
 
 fn remove_char_at(line: &str, col: usize) -> String {
@@ -336,18 +424,28 @@ impl VimBuf {
         match self.mode {
             VimMode::Insert => {
                 let leave = key == "escape" || (ctrl && (key == "c" || key == "["));
-                if leave { Some(self.leave_normal()) } else { None }
+                if leave {
+                    Some(self.leave_normal())
+                } else {
+                    None
+                }
             }
             VimMode::VisualChar | VimMode::VisualLine => {
-                if alt { return None; }
+                if alt {
+                    return None;
+                }
                 self.step_visual(key, ctrl, shift)
             }
             VimMode::VisualBlock => {
-                if alt { return None; }
+                if alt {
+                    return None;
+                }
                 self.step_block(key, shift)
             }
             VimMode::Normal => {
-                if alt { return None; }
+                if alt {
+                    return None;
+                }
                 self.step_normal(key, ctrl, shift)
             }
         }
@@ -362,7 +460,11 @@ impl VimBuf {
             let start = line_starts(&self.text)[lo_line];
             let end = {
                 let s = line_starts(&self.text);
-                if hi_line + 1 < s.len() { s[hi_line + 1] } else { self.text.len() }
+                if hi_line + 1 < s.len() {
+                    s[hi_line + 1]
+                } else {
+                    self.text.len()
+                }
             };
             Some((start, end))
         } else {
@@ -400,7 +502,9 @@ impl VimBuf {
                 self.register = self.text[lo..hi].to_string();
                 self.mode = VimMode::Normal;
                 self.reset();
-                Some(VimStep::moved(byte_after(&self.text, self.caret).min(self.text.len())))
+                Some(VimStep::moved(
+                    byte_after(&self.text, self.caret).min(self.text.len()),
+                ))
             }
             "o" => {
                 let anchor = self.visual_anchor?;
@@ -456,10 +560,22 @@ impl VimBuf {
                 *cur = first_non_ws(text, line_of(text, *cur));
                 Some(VimStep::moved(*cur))
             }
-            "w" => { *cur = next_word_start(text, *cur, false); Some(VimStep::moved(*cur)) }
-            "W" => { *cur = next_word_start(text, *cur, true); Some(VimStep::moved(*cur)) }
-            "b" => { *cur = prev_word_start(text, *cur, false); Some(VimStep::moved(*cur)) }
-            "B" => { *cur = prev_word_start(text, *cur, true); Some(VimStep::moved(*cur)) }
+            "w" => {
+                *cur = next_word_start(text, *cur, false);
+                Some(VimStep::moved(*cur))
+            }
+            "W" => {
+                *cur = next_word_start(text, *cur, true);
+                Some(VimStep::moved(*cur))
+            }
+            "b" => {
+                *cur = prev_word_start(text, *cur, false);
+                Some(VimStep::moved(*cur))
+            }
+            "B" => {
+                *cur = prev_word_start(text, *cur, true);
+                Some(VimStep::moved(*cur))
+            }
             "e" => {
                 let end = next_word_end(text, *cur, false);
                 *cur = move_left(text, end);
@@ -487,7 +603,9 @@ impl VimBuf {
             return Some(self.leave_normal());
         }
         let _ = shift;
-        let (anchor_line, _anchor_col) = self.block_anchor.unwrap_or((line_of(&self.text, self.caret), 0));
+        let (anchor_line, _anchor_col) = self
+            .block_anchor
+            .unwrap_or((line_of(&self.text, self.caret), 0));
         let cur_line = line_of(&self.text, self.caret);
         let (top, bottom) = (anchor_line.min(cur_line), anchor_line.max(cur_line));
         match key {
@@ -612,7 +730,10 @@ impl VimBuf {
                         chars[cp] = c;
                         self.text = chars.into_iter().collect();
                         self.register = old.to_string();
-                        return Some(VimStep::replaced(self.text.clone(), byte_for_char_pos(&self.text, cp)));
+                        return Some(VimStep::replaced(
+                            self.text.clone(),
+                            byte_for_char_pos(&self.text, cp),
+                        ));
                     }
                 }
             }
@@ -626,10 +747,11 @@ impl VimBuf {
             } else if key == "y" && op == Operator::Yank {
                 Some(self.yank_lines(count))
             } else {
-                self.operator_motion_range(key, count).map(|range| match op {
-                    Operator::Delete => self.apply_delete(range),
-                    Operator::Yank => self.apply_yank(range),
-                })
+                self.operator_motion_range(key, count)
+                    .map(|range| match op {
+                        Operator::Delete => self.apply_delete(range),
+                        Operator::Yank => self.apply_yank(range),
+                    })
             };
             self.operator = None;
             self.count = 0;
@@ -639,7 +761,8 @@ impl VimBuf {
         match key {
             "escape" => return Some(VimStep::moved(self.caret)),
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
-                self.count = self.count * 10 + (key.chars().next().unwrap() as usize - '0' as usize);
+                self.count =
+                    self.count * 10 + (key.chars().next().unwrap() as usize - '0' as usize);
                 return Some(VimStep::moved(self.caret));
             }
             _ => {}
@@ -682,12 +805,18 @@ impl VimBuf {
                 Some(VimStep::moved(self.caret))
             }
             "D" => {
-                let range = (self.caret, line_content_end(&self.text, line_of(&self.text, self.caret)));
+                let range = (
+                    self.caret,
+                    line_content_end(&self.text, line_of(&self.text, self.caret)),
+                );
                 self.count = 0;
                 Some(self.apply_delete(range))
             }
             "Y" => {
-                let range = (self.caret, line_content_end(&self.text, line_of(&self.text, self.caret)));
+                let range = (
+                    self.caret,
+                    line_content_end(&self.text, line_of(&self.text, self.caret)),
+                );
                 self.count = 0;
                 Some(self.apply_yank(range))
             }
@@ -704,16 +833,28 @@ impl VimBuf {
                 self.count = 0;
                 Some(self.join_lines())
             }
-            "i" => { self.count = 0; Some(self.enter_insert(self.caret)) }
-            "a" => { self.count = 0; Some(self.enter_insert(byte_after(&self.text, self.caret))) }
-            "I" => { self.count = 0; Some(self.enter_insert(first_non_ws(&self.text, line_of(&self.text, self.caret)))) }
+            "i" => {
+                self.count = 0;
+                Some(self.enter_insert(self.caret))
+            }
+            "a" => {
+                self.count = 0;
+                Some(self.enter_insert(byte_after(&self.text, self.caret)))
+            }
+            "I" => {
+                self.count = 0;
+                Some(self.enter_insert(first_non_ws(&self.text, line_of(&self.text, self.caret))))
+            }
             "A" => {
                 self.count = 0;
                 let line = line_of(&self.text, self.caret);
                 let caret = line_content_end(&self.text, line);
                 Some(self.enter_insert(caret))
             }
-            "o" | "O" => { self.count = 0; Some(self.open_line(key == "O")) }
+            "o" | "O" => {
+                self.count = 0;
+                Some(self.open_line(key == "O"))
+            }
             "v" => {
                 self.count = 0;
                 self.mode = VimMode::VisualChar;
@@ -796,7 +937,10 @@ impl VimBuf {
             "B" => Some((prev_word_start(&self.text, start, true), start)),
             "e" => Some((start, next_word_end(&self.text, start, false))),
             "E" => Some((start, next_word_end(&self.text, start, true))),
-            "$" | "end" => Some((start, line_content_end(&self.text, line_of(&self.text, start)))),
+            "$" | "end" => Some((
+                start,
+                line_content_end(&self.text, line_of(&self.text, start)),
+            )),
             "0" => Some((line_starts(&self.text)[line_of(&self.text, start)], start)),
             "^" | "home" => Some((first_non_ws(&self.text, line_of(&self.text, start)), start)),
             "h" | "left" | "backspace" => Some((move_left_n(&self.text, start, count), start)),
@@ -823,7 +967,9 @@ impl VimBuf {
         let start = line_starts(&self.text)[line_of(&self.text, self.caret)];
         let mut end = start;
         for _ in 0..count {
-            if end >= self.text.len() { break; }
+            if end >= self.text.len() {
+                break;
+            }
             end = byte_after(&self.text, end);
             if end < self.text.len() && self.text.as_bytes()[end] == b'\n' {
                 end += 1;
@@ -871,14 +1017,20 @@ impl VimBuf {
     fn paste(&mut self, before: bool, count: usize) -> VimStep {
         let nl = self.register.ends_with('\n');
         let mut block = String::new();
-        for _ in 0..count { block.push_str(&self.register); }
+        for _ in 0..count {
+            block.push_str(&self.register);
+        }
         if nl {
             let line = line_of(&self.text, self.caret);
             let at = if before {
                 line_starts(&self.text)[line]
             } else {
                 let eol = line_content_end(&self.text, line);
-                if line + 1 < lines(&self.text) { eol + 1 } else { self.text.len() }
+                if line + 1 < lines(&self.text) {
+                    eol + 1
+                } else {
+                    self.text.len()
+                }
             };
             self.push_snapshot();
             self.text = format!("{}{}{}", &self.text[..at], block, &self.text[at..]);
@@ -886,7 +1038,11 @@ impl VimBuf {
             self.caret = caret;
             VimStep::replaced(self.text.clone(), caret)
         } else {
-            let at = if before { self.caret } else { byte_after(&self.text, self.caret) };
+            let at = if before {
+                self.caret
+            } else {
+                byte_after(&self.text, self.caret)
+            };
             self.push_snapshot();
             self.text = format!("{}{}{}", &self.text[..at], block, &self.text[at..]);
             let caret = at.min(self.text.len());
@@ -901,14 +1057,31 @@ impl VimBuf {
             return VimStep::moved(self.caret);
         }
         let starts = line_starts(&self.text);
-        let a = self.text[starts[line]..line_content_end(&self.text, line)].trim_end().to_string();
+        let a = self.text[starts[line]..line_content_end(&self.text, line)]
+            .trim_end()
+            .to_string();
         let b_start = starts[line + 1];
-        let b = self.text[b_start..line_content_end(&self.text, line + 1)].trim_start().to_string();
-        let joiner = if a.is_empty() || b.is_empty() { "" } else { " " };
+        let b = self.text[b_start..line_content_end(&self.text, line + 1)]
+            .trim_start()
+            .to_string();
+        let joiner = if a.is_empty() || b.is_empty() {
+            ""
+        } else {
+            " "
+        };
         let joined = format!("{}{}{}", a, joiner, b);
         self.push_snapshot();
-        let suffix_start = if line + 2 < starts.len() { starts[line + 2] - 1 } else { self.text.len() };
-        self.text = format!("{}{}{}", &self.text[..starts[line]], joined, &self.text[suffix_start..]);
+        let suffix_start = if line + 2 < starts.len() {
+            starts[line + 2] - 1
+        } else {
+            self.text.len()
+        };
+        self.text = format!(
+            "{}{}{}",
+            &self.text[..starts[line]],
+            joined,
+            &self.text[suffix_start..]
+        );
         let caret = (starts[line] + joined.len()).min(self.text.len());
         self.caret = caret;
         VimStep::replaced(self.text.clone(), caret)
@@ -923,13 +1096,24 @@ impl VimBuf {
             starts[line]
         } else {
             let eol = line_content_end(&self.text, line);
-            (if line + 1 < lines(&self.text) { eol + 1 } else { self.text.len() }).min(old_len)
+            (if line + 1 < lines(&self.text) {
+                eol + 1
+            } else {
+                self.text.len()
+            })
+            .min(old_len)
         };
         self.text.insert(at, '\n');
         // The new blank line's insertion point is `at`, except for `o` on the
         // final line without a trailing newline, where the inserted newline is
         // trailing and the caret must land one byte after it.
-        let caret = if before { at } else if at >= old_len { at + 1 } else { at };
+        let caret = if before {
+            at
+        } else if at >= old_len {
+            at + 1
+        } else {
+            at
+        };
         self.mode = VimMode::Insert;
         self.reset();
         self.caret = caret.min(self.text.len());

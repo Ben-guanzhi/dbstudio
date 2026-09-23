@@ -2,13 +2,6 @@ use dbstudio_core::ai::{provider_for, ChatMessage, LlmConfig, Role};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Disableable as _,
-    Icon,
-    IconName,
-    IndexPath,
-    Selectable as _,
-    Sizable as _,
     button::{Button, ButtonVariants as _},
     form::{field, v_form},
     h_flex,
@@ -17,7 +10,8 @@ use gpui_component::{
     list::ListItem,
     scroll::ScrollableElement as _,
     select::{Select, SelectEvent, SelectItem, SelectState},
-    v_flex,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Selectable as _,
+    Sizable as _,
 };
 
 use crate::state::AppState;
@@ -60,9 +54,18 @@ impl SelectItem for ProviderOption {
 
 fn all_providers() -> Vec<ProviderOption> {
     vec![
-        ProviderOption { wire: "openai", title: "OpenAI compatible" },
-        ProviderOption { wire: "ollama", title: "Ollama (local)" },
-        ProviderOption { wire: "mock", title: "Mock (offline)" },
+        ProviderOption {
+            wire: "openai",
+            title: "OpenAI compatible",
+        },
+        ProviderOption {
+            wire: "ollama",
+            title: "Ollama (local)",
+        },
+        ProviderOption {
+            wire: "mock",
+            title: "Mock (offline)",
+        },
     ]
 }
 
@@ -139,7 +142,8 @@ impl AiPanel {
         cx.subscribe_in(&provider_select, window, Self::on_provider_change)
             .detach();
 
-        let base_url = Self::text_input(window, cx, "API base URL (blank = provider default)", false);
+        let base_url =
+            Self::text_input(window, cx, "API base URL (blank = provider default)", false);
         let model = Self::text_input(window, cx, "Model (blank = provider default)", false);
         let api_key = Self::text_input(window, cx, "API key", true);
 
@@ -364,18 +368,34 @@ impl AiPanel {
                 v_form()
                     .columns(1)
                     .small()
-                    .child(field().col_span(1).label_indent(false).label("Provider").child(
-                        Select::new(&self.provider_select),
-                    ))
-                    .child(field().col_span(1).label_indent(false).label("Base URL").child(
-                        Input::new(&self.base_url),
-                    ))
-                    .child(field().col_span(1).label_indent(false).label("Model").child(
-                        Input::new(&self.model),
-                    ))
-                    .child(field().col_span(1).label_indent(false).label("API Key").child(
-                        Input::new(&self.api_key),
-                    )),
+                    .child(
+                        field()
+                            .col_span(1)
+                            .label_indent(false)
+                            .label("Provider")
+                            .child(Select::new(&self.provider_select)),
+                    )
+                    .child(
+                        field()
+                            .col_span(1)
+                            .label_indent(false)
+                            .label("Base URL")
+                            .child(Input::new(&self.base_url)),
+                    )
+                    .child(
+                        field()
+                            .col_span(1)
+                            .label_indent(false)
+                            .label("Model")
+                            .child(Input::new(&self.model)),
+                    )
+                    .child(
+                        field()
+                            .col_span(1)
+                            .label_indent(false)
+                            .label("API Key")
+                            .child(Input::new(&self.api_key)),
+                    ),
             )
             .child(
                 h_flex()
@@ -396,9 +416,9 @@ impl AiPanel {
                             .label("Save")
                             .small()
                             .primary()
-                            .on_click(cx.listener(
-                                |this, _: &ClickEvent, window, cx| this.on_save_settings(window, cx),
-                            )),
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.on_save_settings(window, cx)
+                            })),
                     ),
             )
     }

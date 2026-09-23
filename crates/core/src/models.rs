@@ -10,13 +10,13 @@ pub fn parse_datetime(s: &str) -> chrono::NaiveDateTime {
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%dT%H:%M:%S%.f",
     ];
-    
+
     for format in FORMATS {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, format) {
             return dt;
         }
     }
-    
+
     chrono::Utc::now().naive_utc()
 }
 
@@ -233,7 +233,9 @@ impl SslMode {
         match value.trim().to_lowercase().as_str() {
             "require" | "required" | "prefer" => SslMode::Require,
             "verify_ca" | "verify-ca" => SslMode::VerifyCa,
-            "verify_full" | "verify-full" | "verify_identity" | "verify-identity" | "full" => SslMode::VerifyFull,
+            "verify_full" | "verify-full" | "verify_identity" | "verify-identity" | "full" => {
+                SslMode::VerifyFull
+            }
             _ => SslMode::Disable,
         }
     }
@@ -339,7 +341,8 @@ impl ConnectionConfig {
                 } else {
                     String::new()
                 };
-                format!("{}{}{}",
+                format!(
+                    "{}{}{}",
                     self.host,
                     port_suffix,
                     if self.database.is_empty() {
@@ -405,11 +408,26 @@ mod tests {
 
     #[test]
     fn database_type_parsing_accepts_aliases_case_insensitively() {
-        assert_eq!(DatabaseType::from_str(" Postgres ").unwrap(), DatabaseType::PostgreSQL);
-        assert_eq!(DatabaseType::from_str("PostgreSQL").unwrap(), DatabaseType::PostgreSQL);
-        assert_eq!(DatabaseType::from_str("SQLServer").unwrap(), DatabaseType::MSSQL);
-        assert_eq!(DatabaseType::from_str("mssql").unwrap(), DatabaseType::MSSQL);
-        assert_eq!(DatabaseType::from_str("mariadb").unwrap(), DatabaseType::MySQL);
+        assert_eq!(
+            DatabaseType::from_str(" Postgres ").unwrap(),
+            DatabaseType::PostgreSQL
+        );
+        assert_eq!(
+            DatabaseType::from_str("PostgreSQL").unwrap(),
+            DatabaseType::PostgreSQL
+        );
+        assert_eq!(
+            DatabaseType::from_str("SQLServer").unwrap(),
+            DatabaseType::MSSQL
+        );
+        assert_eq!(
+            DatabaseType::from_str("mssql").unwrap(),
+            DatabaseType::MSSQL
+        );
+        assert_eq!(
+            DatabaseType::from_str("mariadb").unwrap(),
+            DatabaseType::MySQL
+        );
         assert!(DatabaseType::from_str("cassandra").is_err());
     }
 
@@ -447,9 +465,15 @@ mod tests {
     #[test]
     fn extra_params_round_trip() {
         let mut config = ConnectionConfig::new(DatabaseType::MySQL, "test".to_string());
-        config.set_extra_params(HashMap::from([("sslmode".to_string(), "require".to_string())]));
+        config.set_extra_params(HashMap::from([(
+            "sslmode".to_string(),
+            "require".to_string(),
+        )]));
 
-        assert_eq!(config.extra_params_map().get("sslmode").map(String::as_str), Some("require"));
+        assert_eq!(
+            config.extra_params_map().get("sslmode").map(String::as_str),
+            Some("require")
+        );
 
         config.set_extra_params(HashMap::new());
         assert!(config.extra_params.is_none());

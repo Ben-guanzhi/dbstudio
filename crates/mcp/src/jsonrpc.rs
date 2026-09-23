@@ -78,10 +78,9 @@ mod tests {
         assert_eq!(with_params.method, "tools/call");
         assert_eq!(with_params.params["name"], "connect");
 
-        let no_params: Request = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
-        )
-        .unwrap();
+        let no_params: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)
+                .unwrap();
         assert_eq!(no_params.method, "tools/list");
     }
 

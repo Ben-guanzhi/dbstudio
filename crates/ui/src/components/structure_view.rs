@@ -4,7 +4,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, StyledExt as _, h_flex, label::Label, v_flex,
+    h_flex, label::Label, v_flex, ActiveTheme as _, Icon, IconName, StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -72,11 +72,7 @@ impl Render for StructureView {
         let Some((table, schema_prefix)) = state.current_object_for(self.window_id) else {
             return Self::empty_state("Select a table to view its structure.", cx);
         };
-        let Some(schema) = state
-            .table_schemas_for(self.window_id)
-            .get(&table)
-            .cloned()
-        else {
+        let Some(schema) = state.table_schemas_for(self.window_id).get(&table).cloned() else {
             return Self::empty_state("Loading schema...", cx);
         };
 
@@ -122,7 +118,11 @@ impl Render for StructureView {
                                     .text_color(cx.theme().foreground),
                             ),
                         )
-                        .child(div().w(px(150.0)).child(Self::muted(col.data_type.clone(), cx)))
+                        .child(
+                            div()
+                                .w(px(150.0))
+                                .child(Self::muted(col.data_type.clone(), cx)),
+                        )
                         .when(col.is_primary_key, |this| this.child(Self::chip("PK", cx)))
                         .when(!col.nullable, |this| this.child(Self::chip("NOT NULL", cx)))
                         .when_some(col.default_value.as_deref(), |this, default| {
@@ -149,7 +149,9 @@ impl Render for StructureView {
                         .py_1()
                         .child(Label::new(index.name.clone()).text_sm())
                         .child(Self::muted(index.columns.join(", "), cx))
-                        .when(index.is_primary, |this| this.child(Self::chip("PRIMARY", cx)))
+                        .when(index.is_primary, |this| {
+                            this.child(Self::chip("PRIMARY", cx))
+                        })
                         .when(index.is_unique, |this| this.child(Self::chip("UNIQUE", cx)))
                         .when_some(index.index_type.as_deref(), |this, kind| {
                             this.child(Self::muted(kind, cx))
