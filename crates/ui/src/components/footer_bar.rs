@@ -131,10 +131,7 @@ impl Render for FooterBar {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{}",
-                                self.active_database.clone().unwrap_or_default()
-                            )),
+                            .child(self.active_database.clone().unwrap_or_default()),
                     )
                 })
                 .when(!self.status_message.is_empty(), |d| {

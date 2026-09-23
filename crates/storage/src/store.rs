@@ -164,9 +164,8 @@ impl AppStore {
     ///
     /// Used to migrate stores created before a column was introduced.
     async fn ensure_column(pool: &Pool<Sqlite>, name: &str, ddl: &str) -> Result<()> {
-        let (n,): (i64,) = sqlx::query_as(&format!(
-            "SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name = ?1"
-        ))
+        let (n,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name = ?1")
         .bind(name)
         .fetch_one(pool)
         .await?;

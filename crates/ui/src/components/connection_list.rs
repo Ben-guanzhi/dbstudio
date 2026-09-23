@@ -200,7 +200,7 @@ impl ConnectionList {
         };
         let bg_color = if is_selected {
             cx.theme().list_active
-        } else if ix % 2 == 0 {
+        } else if ix.is_multiple_of(2) {
             cx.theme().colors.list
         } else {
             cx.theme().list_even

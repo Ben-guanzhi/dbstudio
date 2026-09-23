@@ -238,10 +238,10 @@ impl Editor {
                 if all_commented {
                     // Remove comment prefix
                     let trimmed = line.trim_start();
-                    if trimmed.starts_with("-- ") {
-                        format!("{}{}", &line[..line.len() - trimmed.len()], &trimmed[3..])
-                    } else if trimmed.starts_with("--") {
-                        format!("{}{}", &line[..line.len() - trimmed.len()], &trimmed[2..])
+                    if let Some(rest) = trimmed.strip_prefix("-- ") {
+                        format!("{}{}", &line[..line.len() - trimmed.len()], rest)
+                    } else if let Some(rest) = trimmed.strip_prefix("--") {
+                        format!("{}{}", &line[..line.len() - trimmed.len()], rest)
                     } else {
                         line.to_string()
                     }

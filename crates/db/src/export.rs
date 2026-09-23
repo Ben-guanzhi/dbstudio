@@ -168,9 +168,8 @@ pub async fn export_database(
         if config.include_data && table.table_type == TableType::Table {
             let select_sql = select_statement(&db_type, &qualified, config.max_rows);
 
-            match conn.execute(&select_sql).await? {
-                SqlResult::Query(q) => {
-                    stats.rows_exported += q.rows.len();
+            if let SqlResult::Query(q) = conn.execute(&select_sql).await? {
+                stats.rows_exported += q.rows.len();
                     stats.tables_exported += 1;
 
                     if !q.rows.is_empty() {
@@ -205,8 +204,6 @@ pub async fn export_database(
                         writeln!(file)?;
                     }
                 }
-                _ => {}
-            }
         }
     }
 

@@ -15,6 +15,12 @@ pub struct McpState {
     pub password: RwLock<String>,
 }
 
+impl Default for McpState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpState {
     pub fn new() -> Self {
         Self {
