@@ -78,6 +78,10 @@ impl HelpModal {
                         "F1".to_string(),
                         "Show or hide this shortcut help".to_string(),
                     ),
+                    (
+                        format!("{m}+,"),
+                        "Open settings (theme, safe mode, Vim)".to_string(),
+                    ),
                     (format!("{m}+N"), "Open a new window".to_string()),
                     (format!("{m}+Q"), "Quit dbstudio".to_string()),
                     (format!("{m}+Shift+A"), "Toggle the AI panel".to_string()),

@@ -23,7 +23,7 @@ use gpui_component::{
     StyledExt as _,
 };
 
-use crate::state::{AppState, build_result_page_sql, fetch_result_page};
+use crate::state::{build_result_page_sql, fetch_result_page, AppState};
 
 mod actions;
 mod export;
@@ -107,6 +107,13 @@ fn filter_op_options_for(kind: CellType) -> Vec<FilterOpOption> {
         .collect()
 }
 
+/// Foreign-key dropdown state for the cell currently being edited.
+#[derive(Debug, Clone)]
+pub(crate) struct FkEdit {
+    /// True once the referenced values have been fetched into the select.
+    pub loaded: bool,
+}
+
 pub struct ResultsPanel {
     window_id: u64,
     result: Option<Arc<SqlResult>>,
@@ -129,6 +136,14 @@ pub struct ResultsPanel {
     editing_input: Entity<InputState>,
     /// Original text + NULL flag of the cell being edited.
     editing_original: Option<(String, bool)>,
+    /// Dropdown offering referenced values while a FK column is edited.
+    editing_fk_select: Entity<SelectState<Vec<SharedString>>>,
+    /// Present while the edited column is a single-column foreign key.
+    editing_fk: Option<FkEdit>,
+    /// Values fetched for [`Self::editing_fk`], consumed during render.
+    editing_fk_pending: Option<Vec<String>>,
+    /// Whether [`Self::editing_fk_pending`] still needs pushing into the select.
+    editing_fk_dirty: bool,
     /// Whether the pending-changes (diff review) modal is open.
     show_review_modal: bool,
     /// Text filter for filtering result rows across all columns.
@@ -230,13 +245,16 @@ impl ResultsPanel {
         )
         .detach();
 
+        let editing_fk_select =
+            cx.new(|cx| SelectState::new(Vec::<SharedString>::new(), None, window, cx));
+        cx.subscribe_in(&editing_fk_select, window, Self::on_fk_select_event)
+            .detach();
+
         let filter_input_sub = filter_input.clone();
         let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
 
-            let state_result_ptr = state
-                .last_result_for(this.window_id)
-                .map(Arc::as_ptr);
+            let state_result_ptr = state.last_result_for(this.window_id).map(Arc::as_ptr);
             let current_result_ptr = this.result.as_ref().map(Arc::as_ptr);
             let result_changed = state_result_ptr != current_result_ptr;
 
@@ -361,6 +379,10 @@ impl ResultsPanel {
             panel_handle,
             editing_cell: None,
             editing_input,
+            editing_fk_select,
+            editing_fk: None,
+            editing_fk_pending: None,
+            editing_fk_dirty: false,
             editing_original: None,
             show_review_modal: false,
             show_insert_modal: false,
@@ -626,18 +648,127 @@ impl ResultsPanel {
     ) {
         self.editing_cell = Some((display_row, display_col));
         self.editing_original = Some((value.clone(), is_null));
+        self.editing_fk = None;
+        self.editing_fk_pending = None;
+        self.editing_fk_dirty = false;
         let initial = if is_null { String::new() } else { value };
         self.editing_input.update(cx, |input, cx| {
             input.set_value(initial, window, cx);
             input.focus(window, cx);
         });
+        self.maybe_load_fk_options(display_row, display_col, cx);
         cx.notify();
+    }
+
+    /// When the edited column is a single-column foreign key, fetch candidate
+    /// values from the referenced table so the delegate can render a dropdown.
+    /// Completion is guarded by the edited cell so a stale fetch never lands
+    /// on a newer edit.
+    fn maybe_load_fk_options(
+        &mut self,
+        display_row: usize,
+        display_col: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if display_col == 0 {
+            return;
+        }
+        let Some(schema) = self.selected_schema.clone() else {
+            return;
+        };
+        let table_entity = self.table.clone();
+        let col_name = table_entity
+            .read(cx)
+            .delegate()
+            .column(display_col, cx)
+            .name
+            .to_string();
+        if col_name.is_empty() {
+            return;
+        }
+        let fk = match schema.foreign_keys.iter().find(|fk| {
+            fk.source_columns.len() == 1
+                && fk.source_columns[0] == col_name
+                && fk.target_columns.len() == 1
+        }) {
+            Some(fk) => fk,
+            None => return,
+        };
+        let target_table = fk.target_table.clone();
+        let target_column = fk.target_columns[0].clone();
+
+        let (conn, db_type) = {
+            let state = cx.global::<AppState>();
+            let conn = state
+                .active_session_for(self.window_id)
+                .and_then(|s| s.connection.clone());
+            let db_type = state
+                .active_connection_for(self.window_id)
+                .map(|c| c.db_type());
+            (conn, db_type)
+        };
+        let (Some(conn), Some(db_type)) = (conn, db_type) else {
+            return;
+        };
+
+        let paged =
+            crate::state::build_fk_options_sql(&target_table, &target_column, 100, 0, db_type);
+        self.editing_fk = Some(FkEdit { loaded: false });
+
+        let cell = (display_row, display_col);
+        let panel = cx.entity().downgrade();
+        cx.spawn(async move |_this, cx| {
+            let values = match conn.execute(&paged).await {
+                Ok(SqlResult::Query(q)) => q
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.first().filter(|c| !c.is_null).map(|c| c.value.clone()))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            cx.update(|app| {
+                if let Some(panel) = panel.upgrade() {
+                    panel.update(app, |this, cx| {
+                        if this.editing_cell == Some(cell) {
+                            this.editing_fk_pending = Some(values);
+                            this.editing_fk_dirty = true;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Picking a value in the foreign-key dropdown writes it into the edit
+    /// buffer and commits immediately (same path as Enter in the text input).
+    fn on_fk_select_event(
+        &mut self,
+        _: &Entity<SelectState<Vec<SharedString>>>,
+        event: &SelectEvent<Vec<SharedString>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editing_cell.is_none() {
+            return;
+        }
+        if let SelectEvent::Confirm(Some(value)) = event {
+            let value = value.clone();
+            self.editing_input.update(cx, |input, cx| {
+                input.set_value(value, window, cx);
+            });
+            self.commit_cell_edit(window, cx);
+        }
     }
 
     /// Cancel the current grid edit without staging anything.
     pub fn cancel_cell_edit(&mut self, cx: &mut Context<Self>) {
         self.editing_cell = None;
         self.editing_original = None;
+        self.editing_fk = None;
+        self.editing_fk_pending = None;
+        self.editing_fk_dirty = false;
         cx.notify();
     }
 
@@ -647,6 +778,9 @@ impl ResultsPanel {
         let Some((display_row, display_col)) = self.editing_cell.take() else {
             return;
         };
+        self.editing_fk = None;
+        self.editing_fk_pending = None;
+        self.editing_fk_dirty = false;
         let original = self.editing_original.take();
         let old = match &original {
             Some((value, is_null)) => {
@@ -869,7 +1003,32 @@ fn spawn_export_result(
 }
 
 impl Render for ResultsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Push freshly fetched foreign-key option values into the cell-edit
+        // dropdown (set_items needs window + context, so it happens here).
+        if self.editing_fk_dirty {
+            self.editing_fk_dirty = false;
+            if self.editing_cell.is_some() {
+                if let Some(values) = self.editing_fk_pending.take() {
+                    if values.is_empty() {
+                        // Nothing to pick from: fall back to the text input.
+                        self.editing_fk = None;
+                    } else {
+                        let current = self.editing_input.read(cx).value().to_string();
+                        let items: Vec<SharedString> =
+                            values.into_iter().map(SharedString::from).collect();
+                        self.editing_fk_select.update(cx, |select, cx| {
+                            select.set_items(items, window, cx);
+                            select.set_selected_value(&SharedString::from(current), window, cx);
+                        });
+                        if let Some(fk) = &mut self.editing_fk {
+                            fk.loaded = true;
+                        }
+                    }
+                }
+            }
+        }
+
         let has_query_results = matches!(self.result.as_deref(), Some(SqlResult::Query(_)));
         let has_schema = self.selected_schema.is_some();
         let has_selection = self.selected_row_cell.borrow().is_some();

@@ -1,8 +1,9 @@
 use gpui::{App, KeyBinding};
 
 use crate::{
-    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, NewWindow, OpenCommandPalette, Quit,
-    RedoLastEdit, ShowHelp, ToggleAiPanel, ToggleComment, ToggleTheme, UndoLastEdit,
+    DuplicateLine, FormatSql, MoveLineDown, MoveLineUp, NewWindow, OpenCommandPalette,
+    OpenSettings, Quit, RedoLastEdit, ShowHelp, ToggleAiPanel, ToggleComment, ToggleTheme,
+    UndoLastEdit,
 };
 
 /// Register all default keybindings. Pass the action types via [`KeyBinding::new`].
@@ -21,6 +22,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-p", OpenCommandPalette, None),
         KeyBinding::new("secondary-k", OpenCommandPalette, None),
         KeyBinding::new("f1", ShowHelp, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("shift-alt-f", FormatSql, None),
         KeyBinding::new("ctrl-/", ToggleComment, None),
         KeyBinding::new("secondary-shift-a", ToggleAiPanel, None),

@@ -164,6 +164,7 @@ impl CommandPalette {
                 "show-help",
                 "Show keyboard shortcuts (F1)",
             ),
+            ("Settings", "open-settings", "Open application settings"),
         ];
 
         for (label, cmd, detail) in commands {

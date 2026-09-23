@@ -7,6 +7,7 @@ pub mod header_bar;
 pub mod help_modal;
 pub mod history_panel;
 pub mod results_panel;
+pub mod settings_modal;
 pub mod sql_completion;
 pub mod sql_editor;
 pub mod structure_view;

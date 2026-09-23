@@ -28,6 +28,7 @@
 | `Cmd/Ctrl+Z` | 撤销 |
 | `Cmd/Ctrl+Shift+Z` | 重做 |
 | `F1` | 显示/隐藏快捷键帮助 |
+| `Cmd/Ctrl+,` | 打开设置 |
 
 ### Vim 模式快捷键
 

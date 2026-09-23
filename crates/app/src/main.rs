@@ -26,7 +26,8 @@ actions!(
         DuplicateLine,
         MoveLineUp,
         MoveLineDown,
-        ShowHelp
+        ShowHelp,
+        OpenSettings
     ]
 );
 
@@ -96,6 +97,9 @@ fn main() {
             // Handled by workspace via on_action on the root div
         });
         cx.on_action(|_: &ShowHelp, _cx| {
+            // Handled by workspace via on_action on the root div
+        });
+        cx.on_action(|_: &OpenSettings, _cx| {
             // Handled by workspace via on_action on the root div
         });
         cx.on_action(|_: &FormatSql, _cx| {
