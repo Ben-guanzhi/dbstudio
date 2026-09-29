@@ -111,18 +111,23 @@ const SQL_KEYWORDS: &[&str] = &[
 
 /// Provides SQL keyword and schema-derived completions to the editor.
 pub struct SqlCompletionProvider {
-    completions: Arc<RwLock<Vec<CompletionItem>>>,
+    /// Each item carries its lowercased label. The prefix filter runs on
+    /// every keystroke and used to lowercase the whole list - keywords and
+    /// schema items alike - each time.
+    completions: Arc<RwLock<Vec<(CompletionItem, String)>>>,
 }
 
 impl SqlCompletionProvider {
     pub fn new() -> Self {
         let completions = SQL_KEYWORDS
             .iter()
-            .map(|keyword| CompletionItem {
-                label: (*keyword).to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some("keyword".to_string()),
-                ..Default::default()
+            .map(|keyword| {
+                indexed(CompletionItem {
+                    label: (*keyword).to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    detail: Some("keyword".to_string()),
+                    ..Default::default()
+                })
             })
             .collect();
 
@@ -134,8 +139,8 @@ impl SqlCompletionProvider {
     /// Replaces the schema-derived completion items (table names, etc.).
     pub fn set_schema_completions(&self, items: Vec<CompletionItem>) {
         let mut guard = self.completions.write().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|item| item.kind != Some(CompletionItemKind::CLASS));
-        guard.extend(items);
+        guard.retain(|(item, _)| item.kind != Some(CompletionItemKind::CLASS));
+        guard.extend(items.into_iter().map(indexed));
     }
 
     /// Check if the cursor is in the middle of a word (not at word start).
@@ -155,18 +160,23 @@ impl SqlCompletionProvider {
 
     /// Filter completions by prefix, case-insensitive.
     fn filter_by_prefix(
-        items: &[CompletionItem],
+        items: &[(CompletionItem, String)],
         prefix: &str,
         max_results: usize,
     ) -> Vec<CompletionItem> {
         let query = prefix.to_lowercase();
         items
             .iter()
-            .filter(|item| item.label.to_lowercase().starts_with(&query))
+            .filter(|(_, label_lower)| label_lower.starts_with(&query))
             .take(max_results)
-            .cloned()
+            .map(|(item, _)| item.clone())
             .collect()
     }
+}
+
+fn indexed(item: CompletionItem) -> (CompletionItem, String) {
+    let label_lower = item.label.to_lowercase();
+    (item, label_lower)
 }
 
 impl Default for SqlCompletionProvider {

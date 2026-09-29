@@ -279,9 +279,12 @@ impl SshTunnel {
             let _ = tx.send(result);
         });
 
-        // Safe to block: the caller runs on the smol executor, never inside the
-        // tokio runtime above.
-        rx.blocking_recv()
+        // Awaiting a tokio oneshot from the caller's executor is fine: the
+        // receiver only needs a Waker, and the establishing work runs on the
+        // dedicated SSH runtime above. Blocking here instead would pin a smol
+        // worker thread for the whole TCP+KEX+auth window (tens of seconds on
+        // a slow link).
+        rx.await
             .context("SSH tunnel task was cancelled before it finished")?
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_lock::Mutex;
 use dbstudio_core::models::ConnectionConfig;
-use dbstudio_core::result::{ResultCell, SqlResult};
+use dbstudio_core::result::{ResultCell, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::*;
 use rusqlite::params;
 use std::sync::{Arc, RwLock};
@@ -102,6 +102,12 @@ impl SqliteConnection {
                 let mut rows = Vec::new();
                 while let Some(row) = rows_iter.next()? {
                     rows.push(row_to_cells(row, columns.len()));
+                    // Same +1 probe as the Postgres/MySQL drivers: rusqlite
+                    // streams rows lazily, so stopping here bounds memory
+                    // while letting `truncate_rows` flag `truncated`.
+                    if rows.len() > MAX_RESULT_ROWS {
+                        break;
+                    }
                 }
 
                 let elapsed = start.elapsed().as_millis();

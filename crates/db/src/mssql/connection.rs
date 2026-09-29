@@ -1,8 +1,9 @@
 use anyhow::Result;
 use async_lock::Mutex;
 use dbstudio_core::models::{ConnectionConfig, SslMode};
-use dbstudio_core::result::{ResultCell, SqlResult};
+use dbstudio_core::result::{ResultCell, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::ColumnInfo;
+use futures::TryStreamExt;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -122,16 +123,23 @@ impl MssqlConnection {
                             .collect()
                     };
 
-                    let result_stream = result
-                        .into_first_result()
-                        .await
-                        .map_err(anyhow::Error::from)?;
-
-                    let mut rows = Vec::new();
-                    for row in result_stream.iter() {
+                    // `into_first_result()` materializes every row before the
+                    // first is visible. Consume the stream lazily instead:
+                    // retain at most MAX_RESULT_ROWS + 1 cell-sets (the +1
+                    // probe matches the Postgres/MySQL drivers) but keep
+                    // draining so the TDS socket is left clean for the next
+                    // query on this connection.
+                    let mut rows: Vec<Vec<ResultCell>> = Vec::new();
+                    let mut row_stream = result.into_row_stream();
+                    while let Some(row) =
+                        row_stream.try_next().await.map_err(anyhow::Error::from)?
+                    {
+                        if rows.len() > MAX_RESULT_ROWS {
+                            continue;
+                        }
                         let mut cells = Vec::new();
                         for i in 0..row.len() {
-                            cells.push(extract_tds_cell(row, i));
+                            cells.push(extract_tds_cell(&row, i));
                         }
                         rows.push(cells);
                     }
@@ -220,16 +228,23 @@ impl MssqlConnection {
                             .collect()
                     };
 
-                    let result_stream = result
-                        .into_first_result()
-                        .await
-                        .map_err(anyhow::Error::from)?;
-
-                    let mut rows = Vec::new();
-                    for row in result_stream.iter() {
+                    // `into_first_result()` materializes every row before the
+                    // first is visible. Consume the stream lazily instead:
+                    // retain at most MAX_RESULT_ROWS + 1 cell-sets (the +1
+                    // probe matches the Postgres/MySQL drivers) but keep
+                    // draining so the TDS socket is left clean for the next
+                    // query on this connection.
+                    let mut rows: Vec<Vec<ResultCell>> = Vec::new();
+                    let mut row_stream = result.into_row_stream();
+                    while let Some(row) =
+                        row_stream.try_next().await.map_err(anyhow::Error::from)?
+                    {
+                        if rows.len() > MAX_RESULT_ROWS {
+                            continue;
+                        }
                         let mut cells = Vec::new();
                         for i in 0..row.len() {
-                            cells.push(extract_tds_cell(row, i));
+                            cells.push(extract_tds_cell(&row, i));
                         }
                         rows.push(cells);
                     }

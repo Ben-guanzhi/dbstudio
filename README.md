@@ -84,8 +84,12 @@ SSH 转发实现于 `crates/db/src/tunnel.rs`（基于 [`russh`](https://crates.
 3. `dbstudio_db::connect` 打开隧道后把配置的 host/port 覆写为回环端点，
    因此所有驱动通过 `Endpoint::resolve` 拿到的都是隧道地址，驱动本身对隧道无感知
 
-注意：当前实现接受任意服务器主机密钥（TOFU / known_hosts 校验尚未实现），
-且隧道随进程生命周期存活（每个连接一条隧道，不主动关闭）。
+主机密钥采用 trust-on-first-use：`crates/db/src/tunnel.rs` 的 `KnownHostsHandler`
+先用 `russh_keys::check_known_hosts` 校验，首次连接的新主机经 `learn_known_hosts`
+写入 known_hosts 并接受；若已记录的主机密钥与服务器不符（`KeyChanged`）则直接失败，
+提示可能存在中间人并让用户删除旧条目后重试。隧道由 `TunnelGuard` 持有，连接对象
+存活期间转发任务持续运行，断开连接（drop `Connection`）即 abort 转发任务，不会泄漏
+常驻端口转发。
 
 ### 异步运行时边界
 
@@ -96,10 +100,11 @@ SSH 转发实现于 `crates/db/src/tunnel.rs`（基于 [`russh`](https://crates.
 | **smol**（async-std 生态） | 应用主体：GPUI 事件循环、`dbstudio-storage`、`dbstudio-ui`、sqlx 的 MySQL/PostgreSQL/SQLite 连接 |
 | **tokio**（专用后台线程上的独立 runtime） | 仅限要求 tokio 上下文的驱动：SSH 隧道（russh）、SQL Server（tiberius）、Oracle |
 
-两个运行时之间唯一的交接点在 `crates/db/src/tunnel.rs`：smol 侧通过 tokio
-oneshot channel 的 `blocking_recv` 等待隧道建立，之后转发任务完全运行在 tokio
-runtime 线程上。修改代码时请遵守该边界——不要在 smol 执行器上阻塞等待 tokio
-任务（反之亦然），也不要把 tokio runtime 泄漏到 `db` crate 之外。
+两个运行时之间唯一的交接点在 `crates/db/src/tunnel.rs`：smol 侧 `await` 一个由
+专用 tokio runtime 完成的 oneshot channel（接收方只需 Waker，不占用 smol 工作线程），
+之后转发任务完全运行在 tokio runtime 线程上。修改代码时请遵守该边界——不要在 smol
+执行器上阻塞等待 tokio 任务（`blocking_recv` 曾把整条 smol 工作线程钉死在整个认证期，
+现已改为 `await`；反之亦然），也不要把 tokio runtime 泄漏到 `db` crate 之外。
 
 ### 数据兼容与命名空间迁移
 

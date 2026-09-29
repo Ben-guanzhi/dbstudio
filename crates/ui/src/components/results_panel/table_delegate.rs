@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dbstudio_core::result::CellType;
 
@@ -148,8 +148,20 @@ pub fn operators_for(kind: CellType) -> &'static [FilterOp] {
     }
 }
 
+/// Row sample for measuring a column's width, and the character count past
+/// which measuring tells us nothing: the width clamp at 3000px takes over at
+/// ~400 characters, and rows past the sample cannot widen a column the first
+/// rows already filled.
+const WIDTH_SAMPLE_ROWS: usize = 100;
+const MAX_MEASURED_CHARS: usize = 400;
+
 pub struct ResultsTableDelegate {
     columns: Vec<Column>,
+    /// Header name to display column, kept in sync with `columns` so a
+    /// by-name lookup costs one hash instead of a scan - building an
+    /// UPDATE touched every column by name, and each one paid for the
+    /// whole header list.
+    column_ix: HashMap<String, usize>,
     rows: Vec<Vec<ResultCell>>,
     order: Vec<usize>,
     sort_col: Option<usize>,
@@ -176,6 +188,7 @@ impl ResultsTableDelegate {
     ) -> Self {
         Self {
             columns: Vec::new(),
+            column_ix: HashMap::new(),
             rows: Vec::new(),
             order: Vec::new(),
             sort_col: None,
@@ -204,8 +217,9 @@ impl ResultsTableDelegate {
             let cell_len = self
                 .rows
                 .iter()
+                .take(WIDTH_SAMPLE_ROWS)
                 .filter_map(|row| row.get(col_ix))
-                .map(|cell| cell.value.chars().count())
+                .map(|cell| cell.value.chars().take(MAX_MEASURED_CHARS).count())
                 .max()
                 .unwrap_or(0);
             let width = (header_len.max(cell_len) as f32 * 7.5 + 24.0).clamp(80.0, 3000.0);
@@ -214,6 +228,7 @@ impl ResultsTableDelegate {
                 .width(px(width))
         }));
         self.columns = cols;
+        self.rebuild_column_index();
         self.rebuild_filtered_order();
     }
 
@@ -296,8 +311,18 @@ impl ResultsTableDelegate {
         self.rebuild_filtered_order();
     }
 
+    fn rebuild_column_index(&mut self) {
+        let mut index = HashMap::with_capacity(self.columns.len());
+        for (ix, col) in self.columns.iter().enumerate() {
+            // A self-join can repeat a header; position() found the first,
+            // so the first keeps the name.
+            index.entry(col.name.to_string()).or_insert(ix);
+        }
+        self.column_ix = index;
+    }
+
     pub(super) fn cell_named(&self, display_row: usize, name: &str) -> Option<&ResultCell> {
-        let display_col = self.columns.iter().position(|c| c.name.as_ref() == name)?;
+        let display_col = *self.column_ix.get(name)?;
         if display_col == 0 {
             return None;
         }
@@ -539,6 +564,7 @@ impl TableDelegate for ResultsTableDelegate {
         let col = self.columns.remove(col_ix);
         let clamped = to_ix.min(self.columns.len());
         self.columns.insert(clamped, col);
+        self.rebuild_column_index();
 
         for row in &mut self.rows {
             if col_ix < row.len() {
@@ -558,3 +584,100 @@ impl TableDelegate for ResultsTableDelegate {
         self.visible_rows = visible_range;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Explicit imports, not `use super::*`: this module's own glob already
+    // re-exports the panel's whole import surface, and re-globbing it in a
+    // child module sends rustc's resolver over its stack limit on Windows.
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use dbstudio_core::result::{QueryResult, ResultCell};
+    use dbstudio_core::schema::ColumnInfo;
+    use gpui::px;
+
+    use super::{ResultsTableDelegate, WIDTH_SAMPLE_ROWS};
+
+    fn delegate() -> ResultsTableDelegate {
+        ResultsTableDelegate::new(
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+        )
+    }
+
+    fn result(columns: &[&str], rows: Vec<Vec<String>>) -> QueryResult {
+        QueryResult {
+            columns: columns
+                .iter()
+                .enumerate()
+                .map(|(ix, name)| ColumnInfo::new(*name, "text", ix as u32))
+                .collect(),
+            rows: rows
+                .into_iter()
+                .map(|row| row.into_iter().map(ResultCell::text).collect())
+                .collect(),
+            row_count: 0,
+            total_row_count: 0,
+            execution_time_ms: 0,
+            sql: String::new(),
+            truncated: false,
+        }
+    }
+
+    // The name index has to answer exactly what the header scan answered:
+    // first of duplicates, nothing for the row-number column, nothing for
+    // names the result does not have.
+    #[test]
+    fn cell_named_resolves_headers_like_the_scan_did() {
+        let mut d = delegate();
+        d.update(&result(
+            &["id", "name", "id"],
+            vec![vec![
+                String::from("1"),
+                String::from("a"),
+                String::from("9"),
+            ]],
+        ));
+        let found = |d: &ResultsTableDelegate, name: &str, row: usize| {
+            d.cell_named(row, name).map(|c| c.value.clone())
+        };
+        assert_eq!(found(&d, "id", 0).as_deref(), Some("1"));
+        assert_eq!(found(&d, "name", 0).as_deref(), Some("a"));
+        assert_eq!(found(&d, "#", 0), None);
+        assert_eq!(found(&d, "missing", 0), None);
+        assert_eq!(found(&d, "name", 1), None);
+        for col in d.columns.iter() {
+            let first = d
+                .columns
+                .iter()
+                .position(|c| c.name == col.name)
+                .unwrap();
+            assert_eq!(d.column_ix[&col.name.to_string()], first);
+        }
+    }
+
+    #[test]
+    fn width_measurement_stops_at_the_sample_and_the_clamp() {
+        let mut rows: Vec<Vec<String>> = (0..WIDTH_SAMPLE_ROWS)
+            .map(|_| vec![String::from("short")])
+            .collect();
+        // The one wide cell sits past the sample, so it must not widen the
+        // column any more than a row that was never there.
+        rows.push(vec!["x".repeat(5000)]);
+        let mut d = delegate();
+        d.update(&result(&["v"], rows));
+        assert_eq!(d.columns[1].width, px(80.0));
+
+        // A wide cell inside the sample still reaches the clamp, and a cell
+        // of five thousand characters is measured no harder than one of
+        // four hundred.
+        let mut d = delegate();
+        d.update(&result(&["v"], vec![vec!["x".repeat(5000)]]));
+        assert_eq!(d.columns[1].width, px(3000.0));
+    }
+}
+
+

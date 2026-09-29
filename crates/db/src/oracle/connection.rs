@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_lock::Mutex;
 use dbstudio_core::models::ConnectionConfig;
-use dbstudio_core::result::{ResultCell, SqlResult};
+use dbstudio_core::result::{ResultCell, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::ColumnInfo;
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,6 +83,9 @@ impl OracleConnection {
                         cells.push(sqlvalue_to_result(v));
                     }
                     rows.push(cells);
+                    if rows.len() > MAX_RESULT_ROWS {
+                        break;
+                    }
                 }
                 let elapsed = start.elapsed().as_millis();
                 Ok(finalize_query_result(columns, rows, sql_string, elapsed))
@@ -169,6 +172,9 @@ impl OracleConnection {
                         cells.push(sqlvalue_to_result(v));
                     }
                     rows.push(cells);
+                    if rows.len() > MAX_RESULT_ROWS {
+                        break;
+                    }
                 }
                 let elapsed = start.elapsed().as_millis();
                 Ok(finalize_query_result(columns, rows, sql_string, elapsed))
