@@ -255,7 +255,7 @@ async fn connect_inner(
 
     // SQLite is file-based, so there is no endpoint to forward.
     let mut tunnel_guard = None;
-    if config.db_type != DatabaseType::SQLite {
+    if !config.db_type.is_file_based() {
         if let Some(tunnel) = SshTunnel::prepare(&config)? {
             // Route the driver through the tunnel's loopback listener instead of
             // dialing the remote host directly. `Endpoint::resolve` picks the

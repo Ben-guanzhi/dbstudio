@@ -89,8 +89,8 @@ pub struct ResultCell {
     pub kind: CellType,
     /// A numeric proxy for the value, when one exists (numbers and dates).
     ///
-    /// Used for stable type-aware sorting. `None` falls back to a text
-    /// comparison. Never stored for `NULL` cells.
+    /// Used for stable type-aware sorting; `None` puts the cell in the text
+    /// group, which compares lexically. Never stored for `NULL` cells.
     #[serde(default)]
     pub sort_value: Option<f64>,
 }
@@ -180,8 +180,17 @@ impl ResultCell {
 
     /// A stable comparison across [`ResultCell`]s for sorting.
     ///
-    /// `NULL` always sorts last; ordered cells compare by their numeric proxy,
-    /// everything else falls back to a plain string comparison.
+    /// Total order, in this precedence: non-`NULL` before `NULL`; among
+    /// non-`NULL` cells, one backed by a numeric proxy sorts before one that
+    /// is not, and cells within each group compare by that group's own order
+    /// (`f64` for the proxy group, lexically for the other).
+    ///
+    /// Keeping the groups disjoint is the point: comparing a proxy-backed
+    /// cell against a text-only cell through only their display strings let
+    /// `2` < `"10"` (numeric) and `"10"` < `"2"` (lexical) hold at once, so
+    /// the relation was not transitive and a sort over it had no defined
+    /// result. `f64::total_cmp` also gives `NaN` a definite position instead
+    /// of folding it into `Equal` with every other value.
     pub fn sort_cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
         match (self.is_null, other.is_null) {
@@ -189,8 +198,10 @@ impl ResultCell {
             (true, false) => Ordering::Greater,
             (false, true) => Ordering::Less,
             (false, false) => match (self.sort_value, other.sort_value) {
-                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
-                _ => self.value.cmp(&other.value),
+                (Some(a), Some(b)) => a.total_cmp(&b),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => self.value.cmp(&other.value),
             },
         }
     }
@@ -425,6 +436,68 @@ mod tests {
             ResultCell::null().sort_cmp(&ResultCell::null()),
             Ordering::Equal
         );
+    }
+
+    #[test]
+    fn sort_cmp_separates_numeric_proxy_cells_from_text_cells() {
+        use std::cmp::Ordering;
+        // Both groups are internally ordered; a proxy-backed cell never
+        // compares through the display string of a text-only cell.
+        let num_2 = ResultCell::integer(2);
+        let num_10 = ResultCell::integer(10);
+        let text_10 = ResultCell::text("10");
+        let text_2 = ResultCell::text("2");
+        assert_eq!(num_2.sort_cmp(&num_10), Ordering::Less);
+        assert_eq!(text_10.sort_cmp(&text_2), Ordering::Less);
+        assert_eq!(num_10.sort_cmp(&text_10), Ordering::Less);
+        assert_eq!(text_10.sort_cmp(&num_10), Ordering::Greater);
+    }
+
+    #[test]
+    fn sort_cmp_places_nan_deterministically() {
+        use std::cmp::Ordering;
+        let nan = ResultCell::float(f64::NAN);
+        assert_eq!(nan.sort_cmp(&nan), Ordering::Equal);
+        assert_eq!(nan.sort_cmp(&ResultCell::float(1.0)), Ordering::Greater);
+        assert_eq!(ResultCell::float(1.0).sort_cmp(&nan), Ordering::Less);
+    }
+
+    /// The relation `sort_by` needs: irreflexive-transitive strict order plus a
+    /// consistent equality. Checked exhaustively over a corpus that mixes every
+    /// combination the old implementation could contradict itself on.
+    #[test]
+    fn sort_cmp_is_a_total_order() {
+        use std::cmp::Ordering;
+        let corpus = [
+            ResultCell::null(),
+            ResultCell::integer(2),
+            ResultCell::integer(10),
+            ResultCell::float(f64::NAN),
+            ResultCell::text("10"),
+            ResultCell::text("2"),
+            ResultCell::typed(CellType::DateTime, "2026-01-05"),
+        ];
+        let lt = |a: &ResultCell, b: &ResultCell| a.sort_cmp(b) == Ordering::Less;
+        let eq = |a: &ResultCell, b: &ResultCell| a.sort_cmp(b) == Ordering::Equal;
+
+        for a in &corpus {
+            assert!(eq(a, a), "a cell must compare equal to itself: {a:?}");
+            for b in &corpus {
+                assert!(!(lt(a, b) && lt(b, a)), "asymmetry violated: {a:?} / {b:?}");
+                for c in &corpus {
+                    if lt(a, b) && lt(b, c) {
+                        assert!(lt(a, c), "transitivity violated: {a:?} < {b:?} < {c:?}");
+                    }
+                    if eq(a, b) {
+                        assert_eq!(
+                            a.sort_cmp(c),
+                            b.sort_cmp(c),
+                            "equal cells must be interchangeable: {a:?} / {b:?} vs {c:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

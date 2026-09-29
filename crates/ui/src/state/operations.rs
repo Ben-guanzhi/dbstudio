@@ -4,7 +4,6 @@ use dbstudio_core::ai::LlmConfig;
 use dbstudio_core::models::{ConnectionConfig, DatabaseType};
 use dbstudio_core::result::{QueryResult, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::{DatabaseInfo, TableSchema};
-use dbstudio_db::utils::{quote_backtick, quote_bracket, quote_double_quote};
 use dbstudio_db::Connection;
 use dbstudio_storage::types::{ConnectionInfo, ConnectionStatus, QueryHistoryEntry};
 use dbstudio_storage::AppStore;
@@ -807,7 +806,7 @@ pub fn load_table_schema(table: &str, schema: Option<&str>, window_id: u64, cx: 
             } else {
                 Some(create_sql)
             },
-            ddl_quality: dbstudio_core::schema::ddl_quality(conn.db_type()),
+            ddl_quality: conn.db_type().ddl_quality(),
         };
         cx.update_global::<AppState, _>(|state, _cx| {
             if let Some(sid) = session_id {
@@ -819,6 +818,9 @@ pub fn load_table_schema(table: &str, schema: Option<&str>, window_id: u64, cx: 
     })
     .detach();
 }
+
+/// Rows fetched when the user browses a table from the tree.
+const BROWSE_ROW_LIMIT: usize = 100;
 
 /// Build a SELECT query with identifier quoting appropriate for the database
 /// type of the active connection in `window_id`.
@@ -838,20 +840,15 @@ pub fn build_select_query(table: &str, schema: Option<&str>, window_id: u64, cx:
         _ => quote_ident_for(db_type, table),
     };
 
-    if db_type == DatabaseType::MSSQL {
-        format!("SELECT TOP 100 * FROM {};", table_ref)
-    } else {
-        format!("SELECT * FROM {} LIMIT 100;", table_ref)
-    }
+    format!(
+        "{};",
+        db_type.preview_statement(&table_ref, BROWSE_ROW_LIMIT)
+    )
 }
 
 /// Quote a SQL identifier (table/column name) for a specific database type.
 pub fn quote_ident_for(db_type: DatabaseType, name: &str) -> String {
-    match db_type {
-        DatabaseType::MySQL => quote_backtick(name),
-        DatabaseType::MSSQL => quote_bracket(name),
-        _ => quote_double_quote(name),
-    }
+    db_type.quote_identifier(name)
 }
 
 /// Build a paginated SELECT for the given (single-statement) query.
@@ -862,15 +859,7 @@ pub fn quote_ident_for(db_type: DatabaseType, name: &str) -> String {
 pub fn paginate_query(sql: &str, limit: usize, offset: usize, db_type: DatabaseType) -> String {
     let inner = sql.trim().trim_end_matches(';').trim();
     let wrapped = format!("SELECT * FROM ( {inner} ) AS _dbstudio_sub");
-    match db_type {
-        DatabaseType::MSSQL => format!(
-            "{wrapped} ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
-        ),
-        DatabaseType::Oracle => {
-            format!("{wrapped} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
-        }
-        _ => format!("{wrapped} LIMIT {limit} OFFSET {offset}"),
-    }
+    db_type.page_clause(&wrapped, limit, offset)
 }
 
 /// Build the SQL for one server-side page of `base`, optionally filtered.
@@ -903,10 +892,7 @@ pub fn build_result_page_sql(
             .iter()
             .map(|col| {
                 let quoted = quote_ident(col, window_id, cx);
-                let cast = match db_type {
-                    DatabaseType::MySQL => format!("CAST({quoted} AS CHAR)"),
-                    _ => format!("CAST({quoted} AS TEXT)"),
-                };
+                let cast = db_type.text_cast_expr(&quoted);
                 format!("LOWER({cast}) LIKE '%{esc}%'")
             })
             .collect();

@@ -36,11 +36,18 @@ pub fn list_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "connect".into(),
-            description: "Connect to a database. Supported db_type: sqlite, mysql, postgresql, mssql, oracle.".into(),
+            description: format!(
+                "Connect to a database. Supported db_type: {}.",
+                DatabaseType::all()
+                    .iter()
+                    .map(|t| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "db_type": { "type": "string", "enum": ["sqlite", "mysql", "postgresql", "mssql", "oracle"] },
+                    "db_type": { "type": "string", "enum": DatabaseType::all().iter().map(|t| t.as_str()).collect::<Vec<_>>() },
                     "host": { "type": "string" },
                     "port": { "type": "integer" },
                     "database": { "type": "string" },

@@ -48,11 +48,7 @@ impl Default for ExportConfig {
 
 /// Quote an identifier with the quoting style for the given DB type.
 fn quote_ident(db_type: &DatabaseType, name: &str) -> String {
-    match db_type {
-        DatabaseType::MSSQL => crate::utils::quote_bracket(name),
-        DatabaseType::SQLite | DatabaseType::MySQL => crate::utils::quote_backtick(name),
-        DatabaseType::PostgreSQL | DatabaseType::Oracle => crate::utils::quote_double_quote(name),
-    }
+    db_type.quote_identifier(name)
 }
 
 /// Build a fully-qualified table identifier, quoted per dialect.
@@ -70,28 +66,12 @@ fn qualified_name(db_type: &DatabaseType, info: &TableInfo) -> String {
 
 /// Build a per-dialect DROP statement for a table.
 fn drop_statement(db_type: &DatabaseType, qualified: &str) -> String {
-    match db_type {
-        DatabaseType::Oracle => format!("DROP TABLE {} PURGE;", qualified),
-        _ => format!("DROP TABLE IF EXISTS {};", qualified),
-    }
+    format!("{};", db_type.drop_table_statement(qualified))
 }
 
 /// Build a per-dialect SELECT statement, applying `max_rows` when > 0.
 fn select_statement(db_type: &DatabaseType, qualified: &str, max_rows: usize) -> String {
-    if *db_type == DatabaseType::MSSQL {
-        if max_rows > 0 {
-            return format!("SELECT TOP {} * FROM {}", max_rows, qualified);
-        }
-        return format!("SELECT * FROM {}", qualified);
-    }
-    let mut sql = format!("SELECT * FROM {}", qualified);
-    if max_rows > 0 {
-        match db_type {
-            DatabaseType::Oracle => sql.push_str(&format!(" FETCH FIRST {} ROWS ONLY", max_rows)),
-            _ => sql.push_str(&format!(" LIMIT {}", max_rows)),
-        }
-    }
-    sql
+    db_type.preview_statement(qualified, max_rows)
 }
 
 /// Build a `TableInfo` shell for an explicitly requested table name (used when

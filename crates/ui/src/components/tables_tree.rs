@@ -455,15 +455,15 @@ impl Render for TablesTree {
                             .separator()
                             .item(PopupMenuItem::new("Truncate").on_click(move |_, _, cx| {
                                 let target = qualify_table(&t_schema, &t_name, window_id, cx);
-                                let is_sqlite = cx
+                                let db_type = cx
                                     .global::<AppState>()
                                     .active_connection_for(window_id)
-                                    .map(|c| c.db_type())
-                                    == Some(dbstudio_core::models::DatabaseType::SQLite);
-                                let sql = if is_sqlite {
-                                    format!("DELETE FROM {target};")
-                                } else {
-                                    format!("TRUNCATE TABLE {target};")
+                                    .map(|c| c.db_type());
+                                // With no live connection there is no dialect to
+                                // consult, and the standard form is sent.
+                                let sql = match db_type {
+                                    Some(t) => format!("{};", t.truncate_statement(&target)),
+                                    None => format!("TRUNCATE TABLE {target};"),
                                 };
                                 crate::state::execute_query(sql, window_id, cx);
                             }))

@@ -119,13 +119,17 @@ pub enum DdlQuality {
     Synthesized,
 }
 
-/// Which DDL quality the engine's `get_create_table_sql` returns.
-pub fn ddl_quality(db_type: crate::models::DatabaseType) -> DdlQuality {
-    match db_type {
-        crate::models::DatabaseType::MySQL | crate::models::DatabaseType::SQLite => {
-            DdlQuality::Real
+impl crate::models::DatabaseType {
+    /// Which DDL quality the engine's `get_create_table_sql` returns.
+    pub fn ddl_quality(&self) -> DdlQuality {
+        match self {
+            crate::models::DatabaseType::MySQL | crate::models::DatabaseType::SQLite => {
+                DdlQuality::Real
+            }
+            crate::models::DatabaseType::PostgreSQL
+            | crate::models::DatabaseType::MSSQL
+            | crate::models::DatabaseType::Oracle => DdlQuality::Synthesized,
         }
-        _ => DdlQuality::Synthesized,
     }
 }
 

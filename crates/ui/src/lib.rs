@@ -9,7 +9,8 @@ pub mod utils;
 #[cfg(test)]
 mod filter_tests {
     use crate::components::results_panel::{
-        cell_matches_filter, like_match, operators_for, FilterOp,
+        cell_matches_filter, contains_ignore_case, like_match, operators_for,
+        starts_with_ignore_case, ColumnFilter, FilterOp, LikePattern, PreparedFilter,
     };
     use dbstudio_core::result::{CellType, ResultCell};
 
@@ -62,6 +63,116 @@ mod filter_tests {
         assert!(like_match("hello world", "%o_w%"));
     }
 
+    /// Reference matcher for `LIKE`, written the way the retired
+    /// dynamic-programming table read: `%` may consume any prefix of what
+    /// follows it. The two-pointer scan in `LikePattern` must accept exactly
+    /// this language.
+    fn like_reference(value: &[char], pattern: &[char]) -> bool {
+        match pattern.first() {
+            None => value.is_empty(),
+            Some('%') => (0..=value.len()).any(|k| like_reference(&value[k..], &pattern[1..])),
+            Some(head) => {
+                !value.is_empty()
+                    && (*head == '_' || *head == value[0])
+                    && like_reference(&value[1..], &pattern[1..])
+            }
+        }
+    }
+
+    fn extend(alphabet: &[char], prefix: String, max_len: usize, out: &mut Vec<String>) {
+        out.push(prefix.clone());
+        if prefix.len() < max_len {
+            for c in alphabet {
+                let mut next = prefix.clone();
+                next.push(*c);
+                extend(alphabet, next, max_len, out);
+            }
+        }
+    }
+
+    #[test]
+    fn like_matcher_agrees_with_the_reference_over_a_bounded_corpus() {
+        let mut values = Vec::new();
+        extend(&['a', 'b'], String::new(), 4, &mut values);
+        let mut patterns = Vec::new();
+        extend(&['a', 'b', '%', '_'], String::new(), 3, &mut patterns);
+
+        for value in &values {
+            for pattern in &patterns {
+                let v: Vec<char> = value.chars().collect();
+                let p: Vec<char> = pattern.chars().collect();
+                let expected = like_reference(&v, &p);
+                assert_eq!(
+                    like_match(value, pattern),
+                    expected,
+                    "like_match({value:?}, {pattern:?})"
+                );
+                assert_eq!(
+                    LikePattern::new(pattern).matches(value),
+                    expected,
+                    "prepared pattern {value:?} / {pattern:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_like_filter_matches_the_per_cell_path_and_skips_nulls() {
+        let filter = ColumnFilter {
+            column: 0,
+            op: FilterOp::Like,
+            value: "%o_w%".to_string(),
+        };
+        let prepared = PreparedFilter::prepare(&filter);
+
+        assert!(prepared.matches(Some(&ResultCell::text("hello world"))));
+        assert!(!prepared.matches(Some(&ResultCell::text("xyz"))));
+        // Identical verdict to the unprepared path, which the grid also uses.
+        for text in ["hello world", "abc", "", "%o_w%"] {
+            let cell = ResultCell::text(text);
+            assert_eq!(
+                prepared.matches(Some(&cell)),
+                cell_matches_filter(Some(&cell), FilterOp::Like, &filter.value),
+                "prepared vs direct for {text:?}"
+            );
+        }
+        assert!(!prepared.matches(Some(&ResultCell::null())));
+        assert!(!prepared.matches(None));
+        // Case folding happens on both sides, as it did in the table version.
+        assert!(PreparedFilter::prepare(&ColumnFilter {
+            column: 0,
+            op: FilterOp::Like,
+            value: "HELLO%".to_string(),
+        })
+        .matches(Some(&ResultCell::text("hello world"))));
+    }
+
+    #[test]
+    fn prepared_filters_pass_through_other_operators() {
+        let prepared = PreparedFilter::prepare(&ColumnFilter {
+            column: 2,
+            op: FilterOp::GreaterThan,
+            value: "5".to_string(),
+        });
+        assert!(prepared.matches(Some(&ResultCell::integer(10))));
+        assert!(!prepared.matches(Some(&ResultCell::integer(3))));
+
+        // A non-numeric expectation still falls back to substring matching, and
+        // the prepared wrapper must not change that.
+        let loose = PreparedFilter::prepare(&ColumnFilter {
+            column: 2,
+            op: FilterOp::GreaterThan,
+            value: "10y".to_string(),
+        });
+        let cell = ResultCell::text("x10y");
+        assert!(loose.matches(Some(&cell)));
+        assert!(cell_matches_filter(
+            Some(&cell),
+            FilterOp::GreaterThan,
+            "10y"
+        ));
+    }
+
     #[test]
     fn numeric_operators_use_sort_proxy() {
         assert!(cell_matches_filter(
@@ -91,6 +202,133 @@ mod filter_tests {
             FilterOp::GreaterThan,
             "10"
         ));
+    }
+
+    /// Values chosen to cover the cases a per-char fold gets wrong: the only
+    /// Unicode code point whose lowercase mapping is longer than one char
+    /// (`U+0130`), a final sigma that must *not* change, a title-case letter,
+    /// an already-combining mark, plus ASCII / CJK / emoji / empty.
+    const CI_VALUES: &[&str] = &[
+        "",
+        "a",
+        "A",
+        "Order_Item_7",
+        "ORDER_ITEM_7",
+        "İstanbul",
+        "i̇stanbul",
+        "İ",
+        "i",
+        "ß",
+        "ẞ",
+        "STRASSE",
+        "straße",
+        "ΣΣΣ",
+        "σσς",
+        "ǅ",
+        "Ǆ",
+        "中文表格",
+        "🙂value🙂",
+        "İİ",
+        "aİb",
+        "İi̇",
+        "ſ",
+        "ſſ",
+        "μ",
+        "12345",
+        "İ12",
+    ];
+
+    fn ci_pairs() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for v in CI_VALUES {
+            for n in CI_VALUES {
+                out.push((v.to_string(), n.to_string()));
+            }
+            // Suffixes and interior slices, so both hits and misses are dense.
+            let chars: Vec<char> = v.chars().collect();
+            for start in 0..chars.len() {
+                for end in start + 1..=chars.len() {
+                    out.push((v.to_string(), chars[start..end].iter().collect()));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn allocation_free_case_foldings_equal_the_whole_string_reference() {
+        let pairs = ci_pairs();
+        let mut hits = 0usize;
+        for (value, needle) in &pairs {
+            let folded = needle.to_lowercase();
+            let want = value.to_lowercase().contains(&folded);
+            assert_eq!(
+                contains_ignore_case(value, &folded),
+                want,
+                "contains({value:?}, {needle:?})"
+            );
+            hits += want as usize;
+            let want_prefix = value.to_lowercase().starts_with(&folded);
+            assert_eq!(
+                starts_with_ignore_case(value, &folded),
+                want_prefix,
+                "starts_with({value:?}, {needle:?})"
+            );
+        }
+        // Guard against a vacuous corpus: it must contain real matches.
+        assert!(hits > pairs.len() / 4, "only {hits} of {} hit", pairs.len());
+    }
+
+    #[test]
+    fn prepared_text_filters_agree_with_the_per_call_path() {
+        for (value, needle) in ci_pairs() {
+            let cell = ResultCell::text(&value);
+            for op in [FilterOp::Contains, FilterOp::StartsWith] {
+                let direct = cell_matches_filter(Some(&cell), op, &needle);
+                let filter = ColumnFilter {
+                    column: 0,
+                    op,
+                    value: needle.clone(),
+                };
+                assert_eq!(
+                    PreparedFilter::prepare(&filter).matches(Some(&cell)),
+                    direct,
+                    "{op:?}({value:?}, {needle:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn like_folds_non_ascii_values_exactly_like_the_whole_string_reference() {
+        // The matcher folds the value lazily; the retired code folded the whole
+        // string. Both must agree with the reference, which is written against
+        // `value.to_lowercase()`. Sigma is the case that breaks a naive fold.
+        let mut patterns: Vec<String> = Vec::new();
+        for p in CI_VALUES {
+            patterns.push(p.to_string());
+            patterns.push(format!("%{p}"));
+            patterns.push(format!("{p}%"));
+            patterns.push(format!("%{p}_%"));
+        }
+        let mut hits = 0usize;
+        for value in CI_VALUES {
+            let vc: Vec<char> = value.to_lowercase().chars().collect();
+            for pattern in &patterns {
+                let pc: Vec<char> = pattern.to_lowercase().chars().collect();
+                let want = like_reference(&vc, &pc);
+                assert_eq!(
+                    LikePattern::new(pattern).matches(value),
+                    want,
+                    "like({value:?}, {pattern:?})"
+                );
+                hits += want as usize;
+            }
+        }
+        assert!(
+            hits > 0 && hits < CI_VALUES.len() * patterns.len(),
+            "hits={hits}"
+        );
     }
 
     #[test]
@@ -294,8 +532,10 @@ mod guard_tests {
     fn comment_prefix_cannot_hide_a_write() {
         // Safe Mode 曾被 `--` 前缀完全绕过：首 token 是 `--`，落入未知分支返回 None。
         assert_eq!(
-            classify_sql("-- hello
-DROP TABLE users;"),
+            classify_sql(
+                "-- hello
+DROP TABLE users;"
+            ),
             Some(WriteKind::Drop)
         );
         assert_eq!(
@@ -338,8 +578,10 @@ DROP TABLE users;"),
         );
         // WHERE 前是换行也能识别（旧实现只匹配 " WHERE "）。
         assert_eq!(
-            classify_sql("DELETE FROM t
-WHERE id = 1"),
+            classify_sql(
+                "DELETE FROM t
+WHERE id = 1"
+            ),
             Some(WriteKind::Delete)
         );
     }

@@ -31,7 +31,10 @@ mod table_delegate;
 mod views;
 
 use table_delegate::ResultsTableDelegate;
-pub use table_delegate::{cell_matches_filter, like_match, operators_for, ColumnFilter, FilterOp};
+pub use table_delegate::{
+    cell_matches_filter, contains_ignore_case, like_match, operators_for, starts_with_ignore_case,
+    ColumnFilter, FilterOp, LikePattern, PreparedFilter,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum ResultsTab {

@@ -599,7 +599,7 @@ impl ConnectionForm {
             return None;
         }
 
-        let port: u16 = if port_str.is_empty() || self.db_type == DatabaseType::SQLite {
+        let port: u16 = if port_str.is_empty() || self.db_type.is_file_based() {
             self.db_type.default_port()
         } else {
             port_str.parse().unwrap_or(self.db_type.default_port())
@@ -891,7 +891,7 @@ impl Render for ConnectionForm {
                 );
         }
 
-        let db_label = if self.db_type == DatabaseType::SQLite {
+        let db_label = if self.db_type.is_file_based() {
             "SQLite file"
         } else {
             "Database"
@@ -1017,7 +1017,7 @@ impl Render for ConnectionForm {
                             .child(Input::new(&self.password)),
                     )
                     .child(db_type_field)
-                    .when(self.db_type != DatabaseType::SQLite, |f| {
+                    .when(!self.db_type.is_file_based(), |f| {
                         f.child(
                             field()
                                 .col_span(2)

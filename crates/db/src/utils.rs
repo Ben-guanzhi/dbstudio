@@ -58,17 +58,17 @@ pub fn column_info(raw: RawColumn, table: &str) -> ColumnInfo {
 
 /// Quote a SQL identifier with backticks (MySQL, SQLite).
 pub fn quote_backtick(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
+    dbstudio_core::models::QuoteStyle::Backtick.quote(value)
 }
 
 /// Quote a SQL identifier with double quotes (Postgres, Oracle, standard SQL).
 pub fn quote_double_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    dbstudio_core::models::QuoteStyle::DoubleQuote.quote(value)
 }
 
 /// Quote a SQL identifier with brackets (MSSQL).
 pub fn quote_bracket(value: &str) -> String {
-    format!("[{}]", value.replace(']', "]]"))
+    dbstudio_core::models::QuoteStyle::Bracket.quote(value)
 }
 
 /// Escape a value for use as a SQL string literal (single quotes).
@@ -142,18 +142,11 @@ pub fn extra_params_query(config: &ConnectionConfig) -> String {
 /// `sslmode=require|verify-ca|verify-full`. If the user already pinned the same
 /// key via `extra_params`, the explicit field loses (explicit JSON wins).
 pub fn ssl_mode_query(config: &ConnectionConfig) -> String {
-    use dbstudio_core::models::{DatabaseType, SslMode};
     if !config.ssl_mode.is_encrypted() {
         return String::new();
     }
-    let (key, value) = match (config.db_type, config.ssl_mode) {
-        (DatabaseType::MySQL, SslMode::Require) => ("ssl-mode", "required"),
-        (DatabaseType::MySQL, SslMode::VerifyCa) => ("ssl-mode", "verify_ca"),
-        (DatabaseType::MySQL, SslMode::VerifyFull) => ("ssl-mode", "verify_identity"),
-        (DatabaseType::PostgreSQL, SslMode::Require) => ("sslmode", "require"),
-        (DatabaseType::PostgreSQL, SslMode::VerifyCa) => ("sslmode", "verify-ca"),
-        (DatabaseType::PostgreSQL, SslMode::VerifyFull) => ("sslmode", "verify-full"),
-        _ => return String::new(),
+    let Some((key, value)) = config.db_type.ssl_mode_param(config.ssl_mode) else {
+        return String::new();
     };
 
     // If the user explicitly configured the same key through extra_params,

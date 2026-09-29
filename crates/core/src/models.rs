@@ -30,6 +30,39 @@ pub enum DatabaseType {
     Oracle,
 }
 
+/// Identifier quoting style an engine accepts.
+///
+/// The three spellings are not interchangeable across engines, and the escaping
+/// is part of the style (each one doubles its own delimiter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteStyle {
+    Backtick,
+    DoubleQuote,
+    Bracket,
+}
+
+impl QuoteStyle {
+    pub fn quote(&self, value: &str) -> String {
+        // `escaped` is the character that doubles itself: for the bracket style
+        // that is only the closing bracket, which is what SQL Server expects.
+        let (open, close, escaped) = match self {
+            QuoteStyle::Backtick => ('`', '`', '`'),
+            QuoteStyle::DoubleQuote => ('"', '"', '"'),
+            QuoteStyle::Bracket => ('[', ']', ']'),
+        };
+        let mut out = String::with_capacity(value.len() + 2);
+        out.push(open);
+        for c in value.chars() {
+            if c == escaped {
+                out.push(c);
+            }
+            out.push(c);
+        }
+        out.push(close);
+        out
+    }
+}
+
 impl DatabaseType {
     pub fn all() -> &'static [DatabaseType] {
         &[
@@ -68,6 +101,128 @@ impl DatabaseType {
             DatabaseType::PostgreSQL => "postgresql",
             DatabaseType::MSSQL => "mssql",
             DatabaseType::Oracle => "oracle",
+        }
+    }
+
+    /// The engine's identifier quoting style.
+    ///
+    /// SQLite is deliberately `Backtick`, not `DoubleQuote`: it accepts all
+    /// three spellings, and both the export path and the SQLite driver's own
+    /// catalog queries already quote with backticks. Keeping the UI on double
+    /// quotes meant the same identifier was quoted two different ways depending
+    /// on which panel generated the SQL.
+    pub fn quote_style(&self) -> QuoteStyle {
+        match self {
+            DatabaseType::SQLite | DatabaseType::MySQL => QuoteStyle::Backtick,
+            DatabaseType::PostgreSQL | DatabaseType::Oracle => QuoteStyle::DoubleQuote,
+            DatabaseType::MSSQL => QuoteStyle::Bracket,
+        }
+    }
+
+    pub fn quote_identifier(&self, value: &str) -> String {
+        self.quote_style().quote(value)
+    }
+
+    /// Does this engine have no network endpoint (so an SSH tunnel is moot)?
+    pub fn is_file_based(&self) -> bool {
+        matches!(self, DatabaseType::SQLite)
+    }
+
+    /// `SELECT` of at most `max_rows` rows from an already-quoted table
+    /// reference. `max_rows == 0` means no limit.
+    ///
+    /// This is the offset-less row-limiting dialect; windowed paging is
+    /// [`DatabaseType::page_clause`]. Oracle has no `LIMIT`, which is why the
+    /// browse-table action used to fail there.
+    pub fn preview_statement(&self, table_ref: &str, max_rows: usize) -> String {
+        match self {
+            DatabaseType::MSSQL => {
+                if max_rows > 0 {
+                    format!("SELECT TOP {max_rows} * FROM {table_ref}")
+                } else {
+                    format!("SELECT * FROM {table_ref}")
+                }
+            }
+            DatabaseType::Oracle if max_rows > 0 => {
+                format!("SELECT * FROM {table_ref} FETCH FIRST {max_rows} ROWS ONLY")
+            }
+            _ if max_rows > 0 => format!("SELECT * FROM {table_ref} LIMIT {max_rows}"),
+            _ => format!("SELECT * FROM {table_ref}"),
+        }
+    }
+
+    /// Windowing clause for an already-wrapped query, in this engine's dialect.
+    pub fn page_clause(&self, wrapped: &str, limit: usize, offset: usize) -> String {
+        match self {
+            // MSSQL requires an ORDER BY before OFFSET/FETCH; `(SELECT NULL)` is
+            // the idiomatic "any order" when the caller has none.
+            DatabaseType::MSSQL => format!(
+                "{wrapped} ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+            ),
+            DatabaseType::Oracle => {
+                format!("{wrapped} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
+            }
+            DatabaseType::SQLite | DatabaseType::MySQL | DatabaseType::PostgreSQL => {
+                format!("{wrapped} LIMIT {limit} OFFSET {offset}")
+            }
+        }
+    }
+
+    /// Expression coercing an already-quoted column to text for `LIKE`/`LOWER`.
+    ///
+    /// The arms are exhaustive on purpose. `TEXT` is what this app has always
+    /// sent for PostgreSQL, SQLite, MSSQL and Oracle; Oracle in particular has
+    /// no `TEXT` type, but that spelling is preserved here rather than silently
+    /// changed, because it has not been verified against a live server.
+    pub fn text_cast_expr(&self, quoted: &str) -> String {
+        match self {
+            DatabaseType::MySQL => format!("CAST({quoted} AS CHAR)"),
+            DatabaseType::SQLite
+            | DatabaseType::PostgreSQL
+            | DatabaseType::MSSQL
+            | DatabaseType::Oracle => format!("CAST({quoted} AS TEXT)"),
+        }
+    }
+
+    /// Statement that empties a table, in a form the engine accepts.
+    pub fn truncate_statement(&self, qualified: &str) -> String {
+        match self {
+            DatabaseType::SQLite => format!("DELETE FROM {qualified}"),
+            DatabaseType::MySQL
+            | DatabaseType::PostgreSQL
+            | DatabaseType::MSSQL
+            | DatabaseType::Oracle => format!("TRUNCATE TABLE {qualified}"),
+        }
+    }
+
+    /// `DROP TABLE` for an already-qualified identifier.
+    pub fn drop_table_statement(&self, qualified: &str) -> String {
+        match self {
+            // Without `PURGE` Oracle drops into the recycle bin and a following
+            // `CREATE TABLE` of the same name fails.
+            DatabaseType::Oracle => format!("DROP TABLE {qualified} PURGE"),
+            DatabaseType::SQLite
+            | DatabaseType::MySQL
+            | DatabaseType::PostgreSQL
+            | DatabaseType::MSSQL => format!("DROP TABLE IF EXISTS {qualified}"),
+        }
+    }
+
+    /// URL-level TLS knob for a given [`SslMode`], or `None` when the engine has
+    /// no such parameter or the spelling differs from the mode named here.
+    ///
+    /// Each driver expects its own vocabulary: MySQL `ssl-mode=required`,
+    /// PostgreSQL `sslmode=require`.
+    pub fn ssl_mode_param(&self, mode: SslMode) -> Option<(&'static str, &'static str)> {
+        use SslMode::*;
+        match (self, mode) {
+            (DatabaseType::MySQL, Require) => Some(("ssl-mode", "required")),
+            (DatabaseType::MySQL, VerifyCa) => Some(("ssl-mode", "verify_ca")),
+            (DatabaseType::MySQL, VerifyFull) => Some(("ssl-mode", "verify_identity")),
+            (DatabaseType::PostgreSQL, Require) => Some(("sslmode", "require")),
+            (DatabaseType::PostgreSQL, VerifyCa) => Some(("sslmode", "verify-ca")),
+            (DatabaseType::PostgreSQL, VerifyFull) => Some(("sslmode", "verify-full")),
+            _ => None,
         }
     }
 }
@@ -429,6 +584,129 @@ mod tests {
             DatabaseType::MySQL
         );
         assert!(DatabaseType::from_str("cassandra").is_err());
+    }
+
+    #[test]
+    fn quote_style_escapes_its_own_delimiter() {
+        assert_eq!(DatabaseType::MySQL.quote_identifier("orders"), "`orders`");
+        assert_eq!(
+            DatabaseType::PostgreSQL.quote_identifier("orders"),
+            "\"orders\""
+        );
+        assert_eq!(DatabaseType::MSSQL.quote_identifier("orders"), "[orders]");
+        // Each style doubles the delimiter it needs to escape.
+        assert_eq!(DatabaseType::SQLite.quote_identifier("a`b"), "`a``b`");
+        assert_eq!(DatabaseType::Oracle.quote_identifier("a\"b"), "\"a\"\"b\"");
+        assert_eq!(DatabaseType::MSSQL.quote_identifier("a]b"), "[a]]b]");
+        // Brackets only escape the closer, not the opener.
+        assert_eq!(DatabaseType::MSSQL.quote_identifier("a[b"), "[a[b]");
+    }
+
+    #[test]
+    fn sqlite_quotes_identifiers_like_the_rest_of_the_app() {
+        // SQLite accepts `"x"`, `` `x` `` and `[x]`, so this is not a
+        // compatibility fix - it is the fix for the same identifier being
+        // quoted two ways depending on which panel generated the SQL.
+        assert_eq!(DatabaseType::SQLite.quote_style(), QuoteStyle::Backtick);
+        assert_eq!(
+            DatabaseType::SQLite.quote_identifier("items"),
+            DatabaseType::MySQL.quote_identifier("items")
+        );
+    }
+
+    #[test]
+    fn preview_statement_uses_a_valid_row_limit_per_engine() {
+        assert_eq!(
+            DatabaseType::PostgreSQL.preview_statement("\"t\"", 100),
+            "SELECT * FROM \"t\" LIMIT 100"
+        );
+        assert_eq!(
+            DatabaseType::MSSQL.preview_statement("[t]", 100),
+            "SELECT TOP 100 * FROM [t]"
+        );
+        // Oracle has no LIMIT clause; browse-table used to send one.
+        assert_eq!(
+            DatabaseType::Oracle.preview_statement("\"t\"", 100),
+            "SELECT * FROM \"t\" FETCH FIRST 100 ROWS ONLY"
+        );
+        // 0 means unlimited, and no engine gets a clause.
+        for db in DatabaseType::all() {
+            assert_eq!(db.preview_statement("x", 0), "SELECT * FROM x", "{db:?}");
+        }
+    }
+
+    #[test]
+    fn page_clause_matches_each_engines_offset_syntax() {
+        assert_eq!(
+            DatabaseType::SQLite.page_clause("SELECT * FROM ( a ) AS _s", 10, 20),
+            "SELECT * FROM ( a ) AS _s LIMIT 10 OFFSET 20"
+        );
+        assert_eq!(
+            DatabaseType::Oracle.page_clause("W", 10, 20),
+            "W OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+        assert_eq!(
+            DatabaseType::MSSQL.page_clause("W", 10, 20),
+            "W ORDER BY (SELECT NULL) OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+    }
+
+    #[test]
+    fn write_statements_are_exhaustively_dialect_specific() {
+        assert_eq!(
+            DatabaseType::SQLite.truncate_statement("`t`"),
+            "DELETE FROM `t`"
+        );
+        assert_eq!(
+            DatabaseType::PostgreSQL.truncate_statement("\"t\""),
+            "TRUNCATE TABLE \"t\""
+        );
+        assert_eq!(
+            DatabaseType::Oracle.drop_table_statement("\"t\""),
+            "DROP TABLE \"t\" PURGE"
+        );
+        assert_eq!(
+            DatabaseType::MySQL.drop_table_statement("`t`"),
+            "DROP TABLE IF EXISTS `t`"
+        );
+        assert_eq!(
+            DatabaseType::MySQL.text_cast_expr("`c`"),
+            "CAST(`c` AS CHAR)"
+        );
+        assert_eq!(
+            DatabaseType::PostgreSQL.text_cast_expr("\"c\""),
+            "CAST(\"c\" AS TEXT)"
+        );
+    }
+
+    #[test]
+    fn ssl_mode_param_only_exists_for_the_two_url_drivers() {
+        use SslMode::*;
+        assert_eq!(
+            DatabaseType::MySQL.ssl_mode_param(Require),
+            Some(("ssl-mode", "required"))
+        );
+        assert_eq!(
+            DatabaseType::PostgreSQL.ssl_mode_param(VerifyFull),
+            Some(("sslmode", "verify-full"))
+        );
+        // Not encrypted at the URL level, or no knob at all.
+        assert_eq!(DatabaseType::MySQL.ssl_mode_param(Disable), None);
+        for db in [
+            DatabaseType::SQLite,
+            DatabaseType::MSSQL,
+            DatabaseType::Oracle,
+        ] {
+            assert_eq!(db.ssl_mode_param(VerifyCa), None, "{db:?}");
+        }
+        // Only SQLite has no endpoint to tunnel.
+        assert!(DatabaseType::SQLite.is_file_based());
+        let file_based: Vec<DatabaseType> = DatabaseType::all()
+            .iter()
+            .filter(|d| d.is_file_based())
+            .copied()
+            .collect();
+        assert_eq!(file_based, vec![DatabaseType::SQLite]);
     }
 
     #[test]
