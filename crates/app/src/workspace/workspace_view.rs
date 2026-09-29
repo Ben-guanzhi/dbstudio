@@ -1,3 +1,4 @@
+use dbstudio_ui::state::Interaction;
 use super::*;
 impl Workspace {
     pub(super) fn render_workspace(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -142,16 +143,17 @@ impl Workspace {
         let has_pending = cx
             .global::<AppState>()
             .window_state(self.window_id)
-            .pending_dangerous_query
-            .is_some();
-        let pending_display = if let Some((ref sql, ref kind)) = cx
+            .interaction
+            .is_pending();
+        let pending_display = match &cx
             .global::<AppState>()
             .window_state(self.window_id)
-            .pending_dangerous_query
+            .interaction
         {
-            Some((sql.clone(), kind.label().to_string()))
-        } else {
-            None
+            Interaction::ConfirmQuery { sql, kind } => {
+                Some((sql.clone(), kind.label().to_string()))
+            }
+            Interaction::Nothing => None,
         };
 
         v_flex()

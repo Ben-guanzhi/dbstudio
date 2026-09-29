@@ -1,4 +1,5 @@
 pub mod guard;
+pub mod ledger;
 pub mod operations;
 
 use std::collections::HashMap;
@@ -80,12 +81,9 @@ pub struct ConnectionSession {
     pub is_executing: bool,
     /// The SQL editor buffer for this session, restored when the tab is switched to.
     pub editor_text: String,
-    /// Accumulated data edits waiting for review (INSERT / UPDATE / DELETE rows).
-    pub pending_edits: Vec<guard::PendingWrite>,
-    /// Applied edits for undo support.
-    pub undo_stack: Vec<guard::EditRecord>,
-    /// Redone edits for redo support.
-    pub redo_stack: Vec<guard::EditRecord>,
+    /// Accumulated data edits, tracked across their whole lifecycle
+    /// (pending → applied/undoable → reverted/redoable) by a single ledger.
+    pub edits: ledger::EditLedger,
     /// Which object segment (Data/Structure/Query/History) the center pane shows.
     pub active_object: ObjectSegment,
     /// The table currently open in the object tabs: (name, schema).
@@ -108,12 +106,28 @@ impl ConnectionSession {
             last_result: None,
             is_executing: false,
             editor_text: String::new(),
-            pending_edits: Vec::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            edits: ledger::EditLedger::new(),
             active_object: ObjectSegment::default(),
             current_object: None,
         }
+    }
+}
+
+/// A window-level interaction awaiting a user decision. Replaces the old bare
+/// `Option<(String, WriteKind)>`: the payload is named, and `None` is an
+/// explicit variant so "nothing pending" and "a query awaits confirmation"
+/// are the only two representable states.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Interaction {
+    #[default]
+    Nothing,
+    /// A dangerous query awaiting confirmation before execution.
+    ConfirmQuery { sql: String, kind: WriteKind },
+}
+
+impl Interaction {
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Interaction::ConfirmQuery { .. })
     }
 }
 
@@ -121,24 +135,12 @@ impl ConnectionSession {
 /// toggles. Multiple windows share the global `sessions` catalog but each keeps
 /// its own active session pointer, so two windows can be on different
 /// connections/databases without disturbing one another.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WindowState {
     pub active_session: Option<u64>,
-    /// A dangerous query awaiting user confirmation before execution.
-    pub pending_dangerous_query: Option<(String, WriteKind)>,
+    pub interaction: Interaction,
     pub show_tables: bool,
     pub show_history: bool,
-}
-
-impl Default for WindowState {
-    fn default() -> Self {
-        Self {
-            active_session: None,
-            pending_dangerous_query: None,
-            show_tables: true,
-            show_history: false,
-        }
-    }
 }
 
 /// Global application state shared across the UI.

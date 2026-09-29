@@ -99,6 +99,34 @@ pub struct TableSchema {
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,
     pub create_sql: Option<String>,
+    /// Provenance of `create_sql`. Engines exposing their real DDL (MySQL's
+    /// SHOW CREATE TABLE, SQLite's sqlite_master) produce `Real`, which
+    /// carries indexes, constraints and comments; engines where the statement
+    /// is reassembled from catalog queries produce `Synthesized`, typically
+    /// column definitions only.
+    #[serde(default)]
+    pub ddl_quality: DdlQuality,
+}
+
+/// Provenance of a CREATE TABLE statement shown in the Structure view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DdlQuality {
+    /// The engine's own stored DDL, round-tripped verbatim.
+    Real,
+    /// Reassembled from catalog queries; lossy by construction.
+    #[default]
+    Synthesized,
+}
+
+/// Which DDL quality the engine's `get_create_table_sql` returns.
+pub fn ddl_quality(db_type: crate::models::DatabaseType) -> DdlQuality {
+    match db_type {
+        crate::models::DatabaseType::MySQL | crate::models::DatabaseType::SQLite => {
+            DdlQuality::Real
+        }
+        _ => DdlQuality::Synthesized,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

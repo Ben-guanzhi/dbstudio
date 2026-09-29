@@ -21,19 +21,20 @@ impl<'a> ConnectionsRepository<'a> {
         Self { pool }
     }
 
-    fn keyring_entry(id: &str) -> keyring::Entry {
+    fn keyring_entry(id: &str) -> Result<keyring::Entry> {
         Self::keyring_entry_for(KEYRING_SERVICE, id)
     }
 
-    fn legacy_keyring_entry(id: &str) -> keyring::Entry {
+    fn legacy_keyring_entry(id: &str) -> Result<keyring::Entry> {
         Self::keyring_entry_for(LEGACY_KEYRING_SERVICE, id)
     }
 
-    fn keyring_entry_for(service: &str, id: &str) -> keyring::Entry {
-        keyring::Entry::new(service, id).unwrap_or_else(|_| {
-            keyring::Entry::new_with_target(id, service, "")
-                .expect("Failed to create keyring entry")
-        })
+    // Errors propagate instead of panicking: a machine without a working
+    // credential service must degrade to "no stored passwords", not abort.
+    fn keyring_entry_for(service: &str, id: &str) -> Result<keyring::Entry> {
+        keyring::Entry::new(service, id)
+            .or_else(|_| keyring::Entry::new_with_target(id, service, ""))
+            .map_err(|e| anyhow::anyhow!("create keyring entry for {service}/{id}: {e}"))
     }
 
     pub async fn load_all(&self) -> Result<Vec<ConnectionConfig>> {
@@ -58,7 +59,10 @@ impl<'a> ConnectionsRepository<'a> {
     }
 
     pub fn get_password(&self, connection_id: &str) -> String {
-        if let Ok(password) = Self::keyring_entry(connection_id).get_password() {
+        let Ok(entry) = Self::keyring_entry(connection_id) else {
+            return String::new();
+        };
+        if let Ok(password) = entry.get_password() {
             if !password.is_empty() {
                 return password;
             }
@@ -67,10 +71,14 @@ impl<'a> ConnectionsRepository<'a> {
         // One-time migration: pre-rename installs stored passwords under the
         // `dbclient` keyring service. Re-export the credential into the current
         // namespace on first read; the legacy entry is kept as a backup.
-        if let Ok(legacy) = Self::legacy_keyring_entry(connection_id).get_password() {
-            if !legacy.is_empty() {
-                let _ = Self::keyring_entry(connection_id).set_password(&legacy);
-                return legacy;
+        if let Ok(entry) = Self::legacy_keyring_entry(connection_id) {
+            if let Ok(legacy) = entry.get_password() {
+                if !legacy.is_empty() {
+                    if let Ok(entry) = Self::keyring_entry(connection_id) {
+                        let _ = entry.set_password(&legacy);
+                    }
+                    return legacy;
+                }
             }
         }
 
@@ -79,24 +87,29 @@ impl<'a> ConnectionsRepository<'a> {
 
     pub fn set_password(&self, connection_id: &str, password: &str) -> Result<()> {
         if password.is_empty() {
-            let _ = Self::keyring_entry(connection_id).delete_credential();
+            if let Ok(entry) = Self::keyring_entry(connection_id) {
+                let _ = entry.delete_credential();
+            }
             // Also clear the legacy entry so an old credential cannot resurface
             // through the migration fallback after the user saved an empty one.
-            let _ = Self::legacy_keyring_entry(connection_id).delete_credential();
+            if let Ok(entry) = Self::legacy_keyring_entry(connection_id) {
+                let _ = entry.delete_credential();
+            }
         } else {
-            Self::keyring_entry(connection_id).set_password(password)?;
+            Self::keyring_entry(connection_id)?.set_password(password)?;
         }
         Ok(())
     }
 
     pub fn get_ssh_password(&self, connection_id: &str) -> String {
         Self::keyring_entry(&format!("ssh:{connection_id}"))
-            .get_password()
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
             .unwrap_or_default()
     }
 
     pub fn set_ssh_password(&self, connection_id: &str, password: &str) -> Result<()> {
-        let entry = Self::keyring_entry(&format!("ssh:{connection_id}"));
+        let entry = Self::keyring_entry(&format!("ssh:{connection_id}"))?;
         if password.is_empty() {
             let _ = entry.delete_credential();
         } else {
@@ -107,12 +120,13 @@ impl<'a> ConnectionsRepository<'a> {
 
     pub fn get_ssh_passphrase(&self, connection_id: &str) -> String {
         Self::keyring_entry(&format!("sshpass:{connection_id}"))
-            .get_password()
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
             .unwrap_or_default()
     }
 
     pub fn set_ssh_passphrase(&self, connection_id: &str, passphrase: &str) -> Result<()> {
-        let entry = Self::keyring_entry(&format!("sshpass:{connection_id}"));
+        let entry = Self::keyring_entry(&format!("sshpass:{connection_id}"))?;
         if passphrase.is_empty() {
             let _ = entry.delete_credential();
         } else {
@@ -172,10 +186,19 @@ impl<'a> ConnectionsRepository<'a> {
             .bind(id)
             .execute(self.pool)
             .await?;
-        let _ = Self::keyring_entry(id).delete_credential();
-        let _ = Self::legacy_keyring_entry(id).delete_credential();
-        let _ = Self::keyring_entry(&format!("ssh:{id}")).delete_credential();
-        let _ = Self::keyring_entry(&format!("sshpass:{id}")).delete_credential();
+        // Best-effort credential cleanup; a missing store has nothing to clear.
+        if let Ok(entry) = Self::keyring_entry(id) {
+            let _ = entry.delete_credential();
+        }
+        if let Ok(entry) = Self::legacy_keyring_entry(id) {
+            let _ = entry.delete_credential();
+        }
+        if let Ok(entry) = Self::keyring_entry(&format!("ssh:{id}")) {
+            let _ = entry.delete_credential();
+        }
+        if let Ok(entry) = Self::keyring_entry(&format!("sshpass:{id}")) {
+            let _ = entry.delete_credential();
+        }
         Ok(())
     }
 

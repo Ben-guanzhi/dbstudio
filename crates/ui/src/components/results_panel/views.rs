@@ -505,10 +505,10 @@ impl ResultsPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let session = cx.global::<AppState>().active_session_for(self.window_id);
-        let pending_count = session.map(|s| s.pending_edits.len()).unwrap_or(0);
+        let pending_count = session.map(|s| s.edits.pending_count()).unwrap_or(0);
         let has_pending = pending_count > 0;
-        let has_undo = session.map(|s| !s.undo_stack.is_empty()).unwrap_or(false);
-        let has_redo = session.map(|s| !s.redo_stack.is_empty()).unwrap_or(false);
+        let has_undo = session.map(|s| s.edits.has_undo()).unwrap_or(false);
+        let has_redo = session.map(|s| s.edits.has_redo()).unwrap_or(false);
 
         h_flex()
             .gap_1()
@@ -730,7 +730,7 @@ impl ResultsPanel {
         let edits = cx
             .global::<AppState>()
             .active_session_for(self.window_id)
-            .map(|s| s.pending_edits.clone())
+            .map(|s| s.edits.pending().to_vec())
             .unwrap_or_default();
         let pending_label = format!("{} pending", edits.len());
 

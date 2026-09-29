@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use dbstudio_core::error::DbError;
 use dbstudio_core::models::{ConnectionConfig, DatabaseType};
 use dbstudio_core::result::SqlResult;
 use dbstudio_core::schema::*;
@@ -112,20 +113,24 @@ impl Connection {
         }
     }
 
-    pub async fn ping(&self) -> Result<()> {
+    pub async fn ping(&self) -> std::result::Result<(), DbError> {
         delegate_to_driver!(self, ping)
+            .map_err(|e| DbError::from_anyhow(&e))
     }
 
-    pub async fn execute(&self, sql: &str) -> Result<SqlResult> {
+    pub async fn execute(&self, sql: &str) -> std::result::Result<SqlResult, DbError> {
         delegate_to_driver!(self, execute, sql)
+            .map_err(|e| DbError::from_anyhow(&e))
     }
 
-    pub async fn current_database(&self) -> Result<String> {
+    pub async fn current_database(&self) -> std::result::Result<String, DbError> {
         delegate_to_driver!(self, current_database)
+            .map_err(|e| DbError::from_anyhow(&e))
     }
 
-    pub async fn switch_database(&self, database: &str) -> Result<()> {
+    pub async fn switch_database(&self, database: &str) -> std::result::Result<(), DbError> {
         delegate_to_driver!(self, switch_database, database)
+            .map_err(|e| DbError::from_anyhow(&e))
     }
 }
 
@@ -142,6 +147,30 @@ pub fn connect_plugin(
         inner: ConnectionInner::Plugin(PluginConnection::new(plugin, handle)),
         _tunnel: None,
     })
+}
+
+/// Emit one JSON-forwarding catalog method on `PluginConnection`: call the
+/// same-named method on the plugin trait and decode the reply into `$ret`.
+/// The `schema_opt` arm unwraps the engine-side `Option<&str>` schema to the
+/// empty string the plugin wire format uses.
+macro_rules! plugin_catalog {
+    // `schema_opt` sits outside the argument group so the two argument shapes
+    // parse without ambiguity (a trailing flag inside the group would be
+    // indistinguishable from one more `&str` argument).
+    ($method:ident, $plugin_method:ident, $ret:ty, schema_opt, ($($arg:ident),+)) => {
+        pub async fn $method(&self, $($arg: &str),+, schema: Option<&str>) -> Result<Vec<$ret>> {
+            let result_json = self
+                .plugin
+                .$plugin_method(&self.handle, $($arg),+, schema.unwrap_or(""))?;
+            serde_json::from_str(&result_json).map_err(Into::into)
+        }
+    };
+    ($method:ident, $plugin_method:ident, $ret:ty, ($($arg:ident),*)) => {
+        pub async fn $method(&self, $($arg: &str),*) -> Result<Vec<$ret>> {
+            let result_json = self.plugin.$plugin_method(&self.handle, $($arg),*)?;
+            serde_json::from_str(&result_json).map_err(Into::into)
+        }
+    };
 }
 
 impl PluginConnection {
@@ -168,50 +197,24 @@ impl PluginConnection {
         Ok(())
     }
 
-    pub async fn list_databases(&self) -> Result<Vec<DatabaseInfo>> {
-        let result_json = self.plugin.list_databases(&self.handle)?;
-        let dbs: Vec<DatabaseInfo> = serde_json::from_str(&result_json)?;
-        Ok(dbs)
-    }
-
     pub async fn list_schemas(&self, _database: &str) -> Result<Vec<SchemaInfo>> {
         // Plugins don't support schemas by default
         Ok(Vec::new())
     }
 
-    pub async fn list_tables(&self, schema: &str) -> Result<Vec<TableInfo>> {
-        let result_json = self.plugin.list_tables(&self.handle, schema)?;
-        let tables: Vec<TableInfo> = serde_json::from_str(&result_json)?;
-        Ok(tables)
-    }
-
-    pub async fn list_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<ColumnInfo>> {
-        let schema_str = schema.unwrap_or("");
-        let result_json = self.plugin.list_columns(&self.handle, table, schema_str)?;
-        let columns: Vec<ColumnInfo> = serde_json::from_str(&result_json)?;
-        Ok(columns)
-    }
-
-    pub async fn list_indexes(&self, table: &str, schema: Option<&str>) -> Result<Vec<IndexInfo>> {
-        let schema_str = schema.unwrap_or("");
-        let result_json = self.plugin.list_indexes(&self.handle, table, schema_str)?;
-        let indexes: Vec<IndexInfo> = serde_json::from_str(&result_json)?;
-        Ok(indexes)
-    }
-
-    pub async fn list_foreign_keys(
-        &self,
-        table: &str,
-        schema: Option<&str>,
-    ) -> Result<Vec<ForeignKeyInfo>> {
-        let schema_str = schema.unwrap_or("");
-        let result_json = self
-            .plugin
-            .list_foreign_keys(&self.handle, table, schema_str)?;
-        let fks: Vec<ForeignKeyInfo> = serde_json::from_str(&result_json)?;
-        Ok(fks)
-    }
-
+    // The five catalog endpoints share one wire shape (call → JSON reply →
+    // decode); the macro keeps them in lockstep with the plugin trait.
+    plugin_catalog!(list_databases, list_databases, DatabaseInfo, ());
+    plugin_catalog!(list_tables, list_tables, TableInfo, (schema));
+    plugin_catalog!(list_columns, list_columns, ColumnInfo, schema_opt, (table));
+    plugin_catalog!(list_indexes, list_indexes, IndexInfo, schema_opt, (table));
+    plugin_catalog!(
+        list_foreign_keys,
+        list_foreign_keys,
+        ForeignKeyInfo,
+        schema_opt,
+        (table)
+    );
     pub async fn get_create_table_sql(&self, table: &str, schema: Option<&str>) -> Result<String> {
         let schema_str = schema.unwrap_or("");
         let sql = self
@@ -222,6 +225,17 @@ impl PluginConnection {
 }
 
 pub async fn connect(
+    config: &ConnectionConfig,
+    password: &str,
+    ssh_password: Option<&str>,
+    ssh_key_passphrase: Option<&str>,
+) -> std::result::Result<Connection, DbError> {
+    connect_inner(config, password, ssh_password, ssh_key_passphrase)
+        .await
+        .map_err(|e| DbError::connect(e.to_string()))
+}
+
+async fn connect_inner(
     config: &ConnectionConfig,
     password: &str,
     ssh_password: Option<&str>,
@@ -276,48 +290,58 @@ pub async fn connect(
     })
 }
 
-pub async fn list_databases(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
-    delegate_to_driver!(conn, list_databases)
+pub async fn list_databases(
+    conn: &Connection,
+) -> std::result::Result<Vec<DatabaseInfo>, DbError> {
+    delegate_to_driver!(conn, list_databases).map_err(|e| DbError::from_anyhow(&e))
 }
 
-pub async fn list_schemas(conn: &Connection, database: &str) -> Result<Vec<SchemaInfo>> {
-    delegate_to_driver!(conn, list_schemas, database)
+pub async fn list_schemas(
+    conn: &Connection,
+    database: &str,
+) -> std::result::Result<Vec<SchemaInfo>, DbError> {
+    delegate_to_driver!(conn, list_schemas, database).map_err(|e| DbError::from_anyhow(&e))
 }
 
-pub async fn list_tables(conn: &Connection, schema: &str) -> Result<Vec<TableInfo>> {
-    delegate_to_driver!(conn, list_tables, schema)
+pub async fn list_tables(
+    conn: &Connection,
+    schema: &str,
+) -> std::result::Result<Vec<TableInfo>, DbError> {
+    delegate_to_driver!(conn, list_tables, schema).map_err(|e| DbError::from_anyhow(&e))
 }
 
 pub async fn list_columns(
     conn: &Connection,
     table: &str,
     schema: Option<&str>,
-) -> Result<Vec<ColumnInfo>> {
-    delegate_to_driver!(conn, list_columns, table, schema)
+) -> std::result::Result<Vec<ColumnInfo>, DbError> {
+    delegate_to_driver!(conn, list_columns, table, schema).map_err(|e| DbError::from_anyhow(&e))
 }
 
 pub async fn list_indexes(
     conn: &Connection,
     table: &str,
     schema: Option<&str>,
-) -> Result<Vec<IndexInfo>> {
-    delegate_to_driver!(conn, list_indexes, table, schema)
+) -> std::result::Result<Vec<IndexInfo>, DbError> {
+    delegate_to_driver!(conn, list_indexes, table, schema).map_err(|e| DbError::from_anyhow(&e))
 }
 
 pub async fn list_foreign_keys(
     conn: &Connection,
     table: &str,
     schema: Option<&str>,
-) -> Result<Vec<ForeignKeyInfo>> {
+) -> std::result::Result<Vec<ForeignKeyInfo>, DbError> {
     delegate_to_driver!(conn, list_foreign_keys, table, schema)
+        .map_err(|e| DbError::from_anyhow(&e))
 }
 
 pub async fn get_create_table_sql(
     conn: &Connection,
     table: &str,
     schema: Option<&str>,
-) -> Result<String> {
+) -> std::result::Result<String, DbError> {
     delegate_to_driver!(conn, get_create_table_sql, table, schema)
+        .map_err(|e| DbError::from_anyhow(&e))
 }
 
 #[cfg(test)]

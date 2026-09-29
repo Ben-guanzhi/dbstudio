@@ -5,12 +5,13 @@ use dbstudio_core::models::{ConnectionConfig, DatabaseType};
 use dbstudio_core::result::{QueryResult, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::{DatabaseInfo, TableSchema};
 use dbstudio_db::utils::{quote_backtick, quote_bracket, quote_double_quote};
+use dbstudio_db::Connection;
 use dbstudio_storage::types::{ConnectionInfo, ConnectionStatus, QueryHistoryEntry};
 use dbstudio_storage::AppStore;
 use gpui::*;
 
-use super::guard::{classify_sql, requires_confirmation, WriteKind};
-use super::{AppState, ConnectionSession, ObjectSegment};
+use super::guard::{self, classify_sql, requires_confirmation, WriteKind};
+use super::{AppState, ConnectionSession, Interaction, ObjectSegment};
 
 /// Create a new empty session and make it the active one in `window_id`.
 /// Returns its id.
@@ -124,47 +125,39 @@ pub fn disconnect(window_id: u64, cx: &mut App) {
     .detach();
 }
 
-/// Run a SQL query / statement against the active session of `window_id`.
-pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
-    let conn = match cx
-        .global::<AppState>()
-        .active_connection_for(window_id)
-        .cloned()
-    {
-        Some(conn) => conn,
-        None => {
-            AppState::update_status(cx, "Not connected".to_string());
-            return;
-        }
-    };
-    let conn_id = cx
-        .global::<AppState>()
-        .active_connection_id_for(window_id)
-        .cloned()
-        .unwrap_or_default();
+/// Connection context resolved once per user action and shared by the
+/// execution helpers below.
+struct ExecContext {
+    conn: Arc<Connection>,
+    conn_id: String,
+    session_id: Option<u64>,
+}
 
-    // Safe-mode guard: classify the SQL and check the session's environment.
-    let kind = classify_sql(&sql);
-    let env = cx
-        .global::<AppState>()
-        .active_session_for(window_id)
-        .map(|s| s.environment)
-        .unwrap_or_default();
-    if requires_confirmation(kind.clone(), env, cx.global::<AppState>().safe_mode) {
-        cx.update_global::<AppState, _>(|state, _cx| {
-            state.window_state_mut(window_id).pending_dangerous_query =
-                Some((sql, kind.unwrap_or(WriteKind::OtherDdl)));
-            state.status_message = "Confirm this query before execution".to_string();
-        });
-        return;
+impl ExecContext {
+    fn for_window(window_id: u64, cx: &App) -> Option<Self> {
+        let state = cx.global::<AppState>();
+        Some(Self {
+            conn: state.active_connection_for(window_id)?.clone(),
+            conn_id: state
+                .active_connection_id_for(window_id)
+                .cloned()
+                .unwrap_or_default(),
+            session_id: state.active_session_for(window_id).map(|s| s.id),
+        })
     }
+}
 
-    // Resolve the session once; completions apply back to the session by id so a
-    // mid-flight connection switch in this (or another) window stays consistent.
-    let session_id = cx
-        .global::<AppState>()
-        .active_session_for(window_id)
-        .map(|s| s.id);
+/// Shared execution backend for the guarded and raw paths: flips the session
+/// into the executing state, runs the SQL, lands the result on the session,
+/// and records history. The two callers only differ in their pre-execution
+/// guard.
+fn spawn_execution(exec: ExecContext, sql: String, cx: &mut App) {
+    let ExecContext {
+        conn,
+        conn_id,
+        session_id,
+    } = exec;
+
     cx.update_global::<AppState, _>(|state, _cx| {
         if let Some(sid) = session_id {
             if let Some(s) = state.session_mut(sid) {
@@ -214,9 +207,21 @@ pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
                 Err(e) => {
                     record_history(state, session_id, &sql_clone, 0, None, true);
                     is_error = true;
-                    state.status_message = format!("Query failed: {}", e);
+                    let lost = e.is_connection_lost();
+                    state.status_message = if lost {
+                        format!("Connection lost: {}", e)
+                    } else {
+                        format!("Query failed: {}", e)
+                    };
                     if let Some(sid) = session_id {
                         if let Some(s) = state.session_mut(sid) {
+                            if lost {
+                                // The handle is dead: drop it and mark the session
+                                // disconnected so the UI offers a reconnect instead
+                                // of continuing to poke a stale connection.
+                                s.connection = None;
+                                s.connection_state = ConnectionStatus::Disconnected;
+                            }
                             s.last_result = Some(Arc::new(SqlResult::Error(
                                 dbstudio_core::result::ErrorResult {
                                     message: e.to_string(),
@@ -244,6 +249,35 @@ pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
         .detach();
     })
     .detach();
+}
+
+/// Run a SQL query / statement against the active session of `window_id`.
+pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
+    let Some(exec) = ExecContext::for_window(window_id, cx) else {
+        AppState::update_status(cx, "Not connected".to_string());
+        return;
+    };
+
+    // Safe-mode guard: classify the SQL and check the session's environment.
+    let kind = classify_sql(&sql);
+    let env = cx
+        .global::<AppState>()
+        .active_session_for(window_id)
+        .map(|s| s.environment)
+        .unwrap_or_default();
+    if requires_confirmation(kind.clone(), env, cx.global::<AppState>().safe_mode) {
+        cx.update_global::<AppState, _>(|state, _cx| {
+            state.window_state_mut(window_id).interaction =
+                Interaction::ConfirmQuery {
+                    sql,
+                    kind: kind.unwrap_or(WriteKind::OtherDdl),
+                };
+            state.status_message = "Confirm this query before execution".to_string();
+        });
+        return;
+    }
+
+    spawn_execution(exec, sql, cx);
 }
 
 /// Switch which object segment (Data/Structure/Query/History) the center pane
@@ -281,12 +315,9 @@ pub fn open_table_object(
 /// Confirm and execute a previously-intercepted dangerous query in `window_id`.
 pub fn confirm_dangerous_query(window_id: u64, cx: &mut App) {
     let pending = cx.update_global::<AppState, _>(|state, _cx| {
-        state
-            .window_state_mut(window_id)
-            .pending_dangerous_query
-            .take()
+        std::mem::take(&mut state.window_state_mut(window_id).interaction)
     });
-    if let Some((sql, _kind)) = pending {
+    if let Interaction::ConfirmQuery { sql, kind: _ } = pending {
         // Re-execute: this time the guard won't intercept because we
         // bypass it by calling execute_raw_query.
         execute_raw_query(sql, window_id, cx);
@@ -296,7 +327,7 @@ pub fn confirm_dangerous_query(window_id: u64, cx: &mut App) {
 /// Dismiss the pending dangerous query in `window_id` without executing it.
 pub fn reject_dangerous_query(window_id: u64, cx: &mut App) {
     cx.update_global::<AppState, _>(|state, _cx| {
-        state.window_state_mut(window_id).pending_dangerous_query = None;
+        state.window_state_mut(window_id).interaction = Interaction::Nothing;
         state.status_message = "Query cancelled".to_string();
     });
 }
@@ -369,105 +400,10 @@ pub fn save_ai_config(config: LlmConfig, cx: &mut App) {
 /// Execute a SQL query without the safe-mode guard. Used internally for
 /// confirmed dangerous queries and programmatic execution (data edits).
 pub fn execute_raw_query(sql: String, window_id: u64, cx: &mut App) {
-    let conn = match cx
-        .global::<AppState>()
-        .active_connection_for(window_id)
-        .cloned()
-    {
-        Some(conn) => conn,
-        None => {
-            AppState::update_status(cx, "Not connected".to_string());
-            return;
-        }
-    };
-    let conn_id = cx
-        .global::<AppState>()
-        .active_connection_id_for(window_id)
-        .cloned()
-        .unwrap_or_default();
-    let session_id = cx
-        .global::<AppState>()
-        .active_session_for(window_id)
-        .map(|s| s.id);
-
-    cx.update_global::<AppState, _>(|state, _cx| {
-        if let Some(sid) = session_id {
-            if let Some(s) = state.session_mut(sid) {
-                s.is_executing = true;
-                s.last_result = None;
-            }
-        }
-        state.status_message = "Executing...".to_string();
-    });
-
-    cx.spawn(async move |cx| {
-        let result = conn.execute(&sql).await;
-        let mut exec_time = 0u128;
-        let mut row_count = None;
-        let mut is_error = false;
-
-        let sql_clone = sql.clone();
-        let row_count_for_record = cx.update_global::<AppState, _>(|state, _cx| {
-            if let Some(sid) = session_id {
-                if let Some(s) = state.session_mut(sid) {
-                    s.is_executing = false;
-                }
-            }
-            match &result {
-                Ok(result) => {
-                    let (exec_ms, rc, err) = match result {
-                        SqlResult::Query(q) => (q.execution_time_ms, Some(q.row_count), false),
-                        SqlResult::Modified(m) => (m.execution_time_ms, None, false),
-                        SqlResult::Error(_) => (0, None, true),
-                    };
-                    if let Some(sid) = session_id {
-                        if let Some(s) = state.session_mut(sid) {
-                            s.last_result = Some(Arc::new(result.clone()));
-                        }
-                    }
-                    record_history(state, session_id, &sql_clone, exec_ms, rc, err);
-                    state.status_message = if err {
-                        "Query failed".to_string()
-                    } else {
-                        "Query executed".to_string()
-                    };
-                    exec_time = exec_ms;
-                    row_count = rc;
-                    is_error = err;
-                    rc
-                }
-                Err(e) => {
-                    record_history(state, session_id, &sql_clone, 0, None, true);
-                    is_error = true;
-                    state.status_message = format!("Query failed: {}", e);
-                    if let Some(sid) = session_id {
-                        if let Some(s) = state.session_mut(sid) {
-                            s.last_result = Some(Arc::new(SqlResult::Error(
-                                dbstudio_core::result::ErrorResult {
-                                    message: e.to_string(),
-                                    sql: sql_clone.clone(),
-                                    execution_time_ms: 0,
-                                },
-                            )));
-                        }
-                    }
-                    None
-                }
-            }
-        });
-
-        cx.spawn(async move |_cx| {
-            if let Ok(store) = AppStore::singleton().await {
-                let _rows = row_count_for_record;
-                let _ = store
-                    .history()
-                    .record(&conn_id, &sql_clone, exec_time, row_count, is_error)
-                    .await;
-            }
-        })
-        .detach();
-    })
-    .detach();
+    match ExecContext::for_window(window_id, cx) {
+        Some(exec) => spawn_execution(exec, sql, cx),
+        None => AppState::update_status(cx, "Not connected".to_string()),
+    }
 }
 
 /// Fetch the next page of a truncated result set and append it in place.
@@ -871,6 +807,7 @@ pub fn load_table_schema(table: &str, schema: Option<&str>, window_id: u64, cx: 
             } else {
                 Some(create_sql)
             },
+            ddl_quality: dbstudio_core::schema::ddl_quality(conn.db_type()),
         };
         cx.update_global::<AppState, _>(|state, _cx| {
             if let Some(sid) = session_id {
@@ -1166,77 +1103,253 @@ async fn connect_async(id: u64, info: ConnectionInfo, cx: &mut AsyncApp) {
     }
 }
 
-/// Generate a best-effort inverse SQL for an applied edit.
-/// This is a simplified approach that handles common cases.
-pub fn generate_inverse(sql: &str, _label: &str) -> String {
-    let upper = sql.to_uppercase();
-    if upper.starts_with("INSERT") {
-        // INSERT → DELETE with same WHERE (best effort: delete by all columns)
-        // This is a simplified inverse; a full implementation would need row data
-        format!("-- undo: {}", sql.trim_end_matches(';'))
-    } else if upper.starts_with("UPDATE") {
-        // UPDATE → can't easily invert without knowing old values
-        // Mark as needing manual review
-        format!("-- undo: {}", sql.trim_end_matches(';'))
-    } else if upper.starts_with("DELETE") {
-        // DELETE → can't easily invert without knowing deleted row data
-        format!("-- undo: {}", sql.trim_end_matches(';'))
-    } else {
-        format!("-- undo: {}", sql.trim_end_matches(';'))
-    }
+/// Execute one SQL statement and report the awaited outcome back to the
+/// caller — success and failure callbacks both run inside the async result
+/// handler, so stack bookkeeping always reflects what actually happened.
+/// Records history either way.
+fn run_edit(
+    exec: ExecContext,
+    sql: String,
+    label: String,
+    on_success: Box<dyn FnOnce(&mut AppState) + 'static>,
+    on_failure: Box<dyn FnOnce(&mut AppState) + 'static>,
+    cx: &mut App,
+) {
+    let ExecContext {
+        conn,
+        conn_id,
+        session_id,
+    } = exec;
+    cx.spawn(async move |cx| {
+        let result = conn.execute(&sql).await;
+        let (exec_ms, row_count, is_error, failure, lost) = match &result {
+            Ok(SqlResult::Query(q)) => (q.execution_time_ms, Some(q.row_count), false, None, false),
+            Ok(SqlResult::Modified(m)) => (m.execution_time_ms, None, false, None, false),
+            Ok(SqlResult::Error(e)) => (0, None, true, Some(e.message.clone()), false),
+            Err(e) => (0, None, true, Some(e.to_string()), e.is_connection_lost()),
+        };
+        // Convert any failure into a SqlResult the state update can store.
+        let result_snapshot = match &result {
+            Ok(r) => r.clone(),
+            Err(e) => SqlResult::Error(dbstudio_core::result::ErrorResult {
+                message: e.to_string(),
+                sql: sql.clone(),
+                execution_time_ms: 0,
+            }),
+        };
+
+        let sql_for_history = sql.clone();
+        cx.update_global::<AppState, _>(|state, _cx| {
+            record_history(state, session_id, &sql_for_history, exec_ms, row_count, is_error);
+            if is_error {
+                // Bookkeeping always runs: a failed undo/redo puts its record
+                // back on the right stack regardless of *why* it failed.
+                on_failure(state);
+                if lost {
+                    if let Some(sid) = session_id {
+                        if let Some(s) = state.session_mut(sid) {
+                            s.connection = None;
+                            s.connection_state = ConnectionStatus::Disconnected;
+                        }
+                    }
+                    state.status_message =
+                        format!("Connection lost: {}", failure.unwrap_or_default());
+                } else {
+                    state.status_message =
+                        format!("{} failed: {}", label, failure.unwrap_or_default());
+                }
+            } else {
+                if let Some(sid) = session_id {
+                    if let Some(s) = state.session_mut(sid) {
+                        s.last_result = Some(Arc::new(result_snapshot));
+                    }
+                }
+                on_success(state);
+                state.status_message = format!("Applied {}", label);
+            }
+        });
+
+        // Persist to storage (fire-and-forget).
+        cx.spawn(async move |_cx| {
+            if let Ok(store) = AppStore::singleton().await {
+                let _ = store
+                    .history()
+                    .record(&conn_id, &sql, exec_ms, row_count, is_error)
+                    .await;
+            }
+        })
+        .detach();
+    })
+    .detach();
 }
 
 /// Undo the last applied edit in the active session of `window_id`.
+///
+/// The inverse runs first; the redo entry is only recorded when the inverse
+/// actually went through. A failed undo puts the record back on the undo
+/// stack instead of arming a redo that would replay an edit that never left.
 pub fn undo_last_edit(window_id: u64, cx: &mut App) {
-    let record = cx.update_global::<AppState, _>(|state, _cx| {
-        match state.active_session_mut_for(window_id) {
-            Some(s) if !s.undo_stack.is_empty() => {
-                let record = s.undo_stack.pop().unwrap();
-                s.redo_stack.push(crate::state::guard::EditRecord {
-                    forward_sql: record.forward_sql.clone(),
-                    inverse_sql: record.inverse_sql.clone(),
-                    label: record.label.clone(),
-                });
-                Some(record)
-            }
-            _ => None,
-        }
+    let Some(exec) = ExecContext::for_window(window_id, cx) else {
+        AppState::update_status(cx, "Not connected".to_string());
+        return;
+    };
+
+    let popped = cx.update_global::<AppState, _>(|state, _cx| {
+        state
+            .active_session_mut_for(window_id)
+            .and_then(|s| s.edits.undo_top())
     });
-    if let Some(record) = record {
-        // Only execute if the inverse is actual SQL (not a comment placeholder).
-        if !record.inverse_sql.is_empty() && !record.inverse_sql.starts_with("--") {
-            execute_raw_query(record.inverse_sql, window_id, cx);
-            AppState::update_status(cx, format!("Undid {}", record.label));
-        } else {
-            AppState::update_status(cx, format!("Undo not available for: {}", record.label));
-        }
-    } else {
+    let Some(record) = popped else {
         AppState::update_status(cx, "Nothing to undo".to_string());
+        return;
+    };
+    if record.inverse_sql.is_empty() {
+        // Records without a derivable inverse are never pushed; reaching here
+        // means a legacy entry. Surface it and move on.
+        AppState::update_status(cx, format!("Undo not available for: {}", record.label));
+        return;
     }
+
+    let redo_record = record.clone();
+    let undo_record = record.clone();
+    run_edit(
+        exec,
+        record.inverse_sql.clone(),
+        format!("undo of {}", record.label),
+        Box::new(move |state| {
+            if let Some(s) = state.active_session_mut_for(window_id) {
+                s.edits.undo_succeeded(&redo_record);
+            }
+        }),
+        Box::new(move |state| {
+            if let Some(s) = state.active_session_mut_for(window_id) {
+                s.edits.undo_failed(undo_record);
+            }
+        }),
+        cx,
+    );
 }
 
 /// Redo the last undone edit in the active session of `window_id`.
+///
+/// Mirrors [`undo_last_edit`]: the forward statement runs first and the undo
+/// entry is only recorded when it actually went through.
 pub fn redo_last_edit(window_id: u64, cx: &mut App) {
-    let record = cx.update_global::<AppState, _>(|state, _cx| {
-        match state.active_session_mut_for(window_id) {
-            Some(s) if !s.redo_stack.is_empty() => {
-                let record = s.redo_stack.pop().unwrap();
-                s.undo_stack.push(crate::state::guard::EditRecord {
-                    forward_sql: record.forward_sql.clone(),
-                    inverse_sql: record.inverse_sql.clone(),
-                    label: record.label.clone(),
-                });
-                Some(record)
-            }
-            _ => None,
-        }
+    let Some(exec) = ExecContext::for_window(window_id, cx) else {
+        AppState::update_status(cx, "Not connected".to_string());
+        return;
+    };
+
+    let popped = cx.update_global::<AppState, _>(|state, _cx| {
+        state
+            .active_session_mut_for(window_id)
+            .and_then(|s| s.edits.redo_top())
     });
-    if let Some(record) = record {
-        execute_raw_query(record.forward_sql, window_id, cx);
-        AppState::update_status(cx, format!("Redid {}", record.label));
-    } else {
+    let Some(record) = popped else {
         AppState::update_status(cx, "Nothing to redo".to_string());
+        return;
+    };
+
+    let undo_record = record.clone();
+    let redo_record = record.clone();
+    run_edit(
+        exec,
+        record.forward_sql.clone(),
+        format!("redo of {}", record.label),
+        Box::new(move |state| {
+            if let Some(s) = state.active_session_mut_for(window_id) {
+                s.edits.redo_succeeded(&undo_record);
+            }
+        }),
+        Box::new(move |state| {
+            if let Some(s) = state.active_session_mut_for(window_id) {
+                s.edits.redo_failed(redo_record);
+            }
+        }),
+        cx,
+    );
+}
+
+/// Apply staged edits in order, each leaving the pending buffer and entering
+/// the undo stack only when its execution succeeded. Stops at the first
+/// failure; the failed edit and everything after it stay pending for retry.
+pub fn apply_edits_sequentially(edits: Vec<guard::PendingWrite>, window_id: u64, cx: &mut App) {
+    if edits.is_empty() {
+        return;
     }
+    let Some(exec) = ExecContext::for_window(window_id, cx) else {
+        AppState::update_status(cx, "Not connected".to_string());
+        return;
+    };
+    let ExecContext {
+        conn,
+        conn_id,
+        session_id,
+    } = exec;
+
+    cx.spawn(async move |cx| {
+        for edit in edits {
+            let result = conn.execute(&edit.sql).await;
+            let (exec_ms, row_count, is_error, failure) = match &result {
+                Ok(SqlResult::Query(q)) => (q.execution_time_ms, Some(q.row_count), false, None),
+                Ok(SqlResult::Modified(m)) => (m.execution_time_ms, None, false, None),
+                Ok(SqlResult::Error(e)) => (0, None, true, Some(e.message.clone())),
+                Err(e) => (0, None, true, Some(e.to_string())),
+            };
+            let failed = is_error;
+            let sql = edit.sql.clone();
+            let label = edit.label.clone();
+            // anyhow::Error is not Clone, so the state update works on a
+            // SqlResult snapshot (transport errors become SqlResult::Error).
+            let result_snapshot = match &result {
+                Ok(r) => r.clone(),
+                Err(e) => SqlResult::Error(dbstudio_core::result::ErrorResult {
+                    message: e.to_string(),
+                    sql: sql.clone(),
+                    execution_time_ms: 0,
+                }),
+            };
+
+            cx.update_global::<AppState, _>(|state, _cx| {
+                record_history(state, session_id, &sql, exec_ms, row_count, is_error);
+                if let Some(sid) = session_id {
+                    if let Some(s) = state.session_mut(sid) {
+                        s.last_result = Some(Arc::new(result_snapshot.clone()));
+                        if failed {
+                            // The edit (and the rest) stay pending for retry.
+                        } else {
+                            // Leave the pending queue and enter the undo side;
+                            // the ledger owns the "new apply clears redo" and
+                            // "no inverse -> not undoable" rules.
+                            s.edits.apply_success(&sql);
+                        }
+                    }
+                }
+                state.status_message = if failed {
+                    format!("{} failed: {}", label, failure.unwrap_or_default())
+                } else {
+                    format!("Applied {}", label)
+                };
+            });
+
+            // Persist to storage (fire-and-forget).
+            let conn_id = conn_id.clone();
+            cx.spawn(async move |_cx| {
+                if let Ok(store) = AppStore::singleton().await {
+                    let _ = store
+                        .history()
+                        .record(&conn_id, &sql, exec_ms, row_count, is_error)
+                        .await;
+                }
+            })
+            .detach();
+
+            if failed {
+                return;
+            }
+        }
+    })
+    .detach();
 }
 
 /// Save a query as a favorite.

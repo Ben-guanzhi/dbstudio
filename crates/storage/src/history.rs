@@ -97,6 +97,27 @@ impl<'a> QueryHistoryRepository<'a> {
         .await?;
         Ok(())
     }
+
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<QueryHistoryEntry>> {
+        let pattern = format!("%{}%", query);
+        let rows: Vec<HistoryRow> = sqlx::query_as(
+            "SELECT id, connection_id, sql, execution_time_ms, row_count, is_error, executed_at
+             FROM query_history
+             WHERE sql LIKE ?1
+             ORDER BY executed_at DESC
+             LIMIT ?2",
+        )
+        .bind(&pattern)
+        .bind(limit as i64)
+        .fetch_all(self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.into_entry()).collect())
+    }
 }
 
 #[derive(sqlx::FromRow)]

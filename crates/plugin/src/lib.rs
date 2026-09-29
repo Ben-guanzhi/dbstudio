@@ -53,20 +53,44 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     /// JSON-encoded query result
     fn execute(&self, handle: &str, sql: &str) -> anyhow::Result<String>;
 
+    // ── Catalog/metadata operations ──
+    // Every one of these carries a default impl so growing the trait does not
+    // break the vtable again (v2 already bumped ABI for exactly this reason):
+    // a plugin built against an older ABI keeps loading, and an operation it
+    // does not override surfaces as a clean "unsupported" error instead of a
+    // link failure. Override what the wrapped engine can actually serve.
+
     /// List databases on the server.
-    fn list_databases(&self, handle: &str) -> anyhow::Result<String>;
+    fn list_databases(&self, handle: &str) -> anyhow::Result<String> {
+        let _ = handle;
+        Err(anyhow::anyhow!("list_databases not supported by this plugin"))
+    }
 
     /// List tables in the current database.
-    fn list_tables(&self, handle: &str, schema: &str) -> anyhow::Result<String>;
+    fn list_tables(&self, handle: &str, schema: &str) -> anyhow::Result<String> {
+        let _ = (handle, schema);
+        Err(anyhow::anyhow!("list_tables not supported by this plugin"))
+    }
 
     /// List columns for a table.
-    fn list_columns(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String>;
+    fn list_columns(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String> {
+        let _ = (handle, table, schema);
+        Err(anyhow::anyhow!("list_columns not supported by this plugin"))
+    }
 
     /// List indexes for a table.
-    fn list_indexes(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String>;
+    fn list_indexes(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String> {
+        let _ = (handle, table, schema);
+        Err(anyhow::anyhow!("list_indexes not supported by this plugin"))
+    }
 
     /// List foreign keys for a table.
-    fn list_foreign_keys(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String>;
+    fn list_foreign_keys(&self, handle: &str, table: &str, schema: &str) -> anyhow::Result<String> {
+        let _ = (handle, table, schema);
+        Err(anyhow::anyhow!(
+            "list_foreign_keys not supported by this plugin"
+        ))
+    }
 
     /// Get CREATE TABLE SQL for a table.
     fn get_create_table_sql(
@@ -74,10 +98,18 @@ pub unsafe trait DatabasePlugin: Send + Sync {
         handle: &str,
         table: &str,
         schema: &str,
-    ) -> anyhow::Result<String>;
+    ) -> anyhow::Result<String> {
+        let _ = (handle, table, schema);
+        Err(anyhow::anyhow!(
+            "get_create_table_sql not supported by this plugin"
+        ))
+    }
 
     /// Switch to a different database.
-    fn switch_database(&self, handle: &str, database: &str) -> anyhow::Result<()>;
+    fn switch_database(&self, handle: &str, database: &str) -> anyhow::Result<()> {
+        let _ = (handle, database);
+        Err(anyhow::anyhow!("switch_database not supported by this plugin"))
+    }
 
     /// Get the name of the currently selected database.
     ///

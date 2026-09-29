@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod error;
 pub mod models;
 pub mod result;
 pub mod schema;

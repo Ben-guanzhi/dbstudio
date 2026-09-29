@@ -110,54 +110,322 @@ impl WriteKind {
 /// Classifies the first SQL statement in `sql`. Returns `None` for empty
 /// input or for statements that are purely read-only when the environment
 /// is forgiving.
+///
+/// Classification parses the text with the tree-sitter SQL grammar and maps
+/// the statement's syntax-tree nodes to a write kind, so comments, string
+/// literals and identifiers cannot influence the outcome the way they could
+/// influence a keyword scan: a leading `-- comment` never hides a `DROP`, a
+/// `/* WHERE */` comment never scopes an unscoped `DELETE`, a column named
+/// `deleted` never looks like one, and data-modifying CTEs or multi-statement
+/// batches (`SELECT 1; DROP TABLE x`) are found in document order. Statements
+/// the Postgres-flavoured grammar cannot parse (USE, PRAGMA, VACUUM, GRANT,
+/// CALL, ...) — and input with no statement at all — fall back to the lexical
+/// heuristic, which keeps their historical classification.
 pub fn classify_sql(sql: &str) -> Option<WriteKind> {
-    let trimmed = sql.trim_start();
-    if trimmed.is_empty() {
+    if sql.trim().is_empty() {
         return None;
     }
-    let first_keyword = trimmed
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_uppercase();
+    match classify_sql_ast(sql) {
+        Some(kind) => Some(kind),
+        None => classify_sql_lexical(sql),
+    }
+}
 
-    match first_keyword.as_str() {
-        "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "PRAGMA" | "WITH" => {
-            Some(WriteKind::Select)
+/// AST-driven classification. `None` means "cannot decide from the syntax
+/// tree" — the text does not parse cleanly or contains no statement — and the
+/// caller falls back to the lexical heuristic.
+fn classify_sql_ast(sql: &str) -> Option<WriteKind> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_sequel::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(sql, None)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+
+    let mut saw_select = false;
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        // Comments, marginalia and `;` tokens sit between the statements.
+        if !child.is_named() || child.kind() != "statement" {
+            continue;
         }
-        "INSERT" => Some(WriteKind::Insert),
-        "UPDATE" => has_where(trimmed).map(|has| {
-            if has {
+        match classify_statement(child) {
+            // A write anywhere in the batch decides the batch's kind.
+            Some(kind) if !kind.is_read_only() => return Some(kind),
+            Some(_) => saw_select = true,
+            // Neutral statements (SET, transactions) say nothing about the
+            // batch; keep looking.
+            None => {}
+        }
+    }
+    if saw_select {
+        return Some(WriteKind::Select);
+    }
+    None
+}
+
+/// Pre-order scan of one statement for its first operation node. Pre-order is
+/// document order, so a data-modifying CTE (`WITH d AS (DELETE …) SELECT …`)
+/// wins over the outer SELECT that follows it, and wrapper nodes (an `update`
+/// node over its `keyword_update` token) shadow keyword tokens nested inside
+/// them (`ON DELETE CASCADE` under `create_table`).
+fn classify_statement(statement: tree_sitter::Node) -> Option<WriteKind> {
+    classify_node(statement, false)
+}
+
+fn classify_node(node: tree_sitter::Node, in_cte: bool) -> Option<WriteKind> {
+    match node.kind() {
+        "select" => Some(WriteKind::Select),
+        "insert" => Some(WriteKind::Insert),
+        "update" => {
+            // WHERE attribution inside a CTE is ambiguous, and so is a WHERE
+            // that only belongs to a subquery — both stay unscoped (the
+            // destructive variant, which always asks for confirmation).
+            let scoped = !in_cte && has_direct_child(node, "where");
+            Some(if scoped {
                 WriteKind::Update
             } else {
                 WriteKind::UpdateNoWhere
+            })
+        }
+        "delete" => Some(delete_kind(node, in_cte)),
+        "cte" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(kind) = classify_node(child, true) {
+                    return Some(kind);
+                }
             }
+            None
+        }
+        // SET/transactions are neither read nor write; do not descend.
+        "set_statement" | "reset_statement" | "transaction" => None,
+        other => {
+            if let Some(kind) = keyword_write_kind(other) {
+                return Some(kind);
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(kind) = classify_node(child, in_cte) {
+                    return Some(kind);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Grammar keyword tokens that surface as named nodes (e.g. `TRUNCATE TABLE`
+/// has no wrapper node — its statement starts with a `keyword_truncate`).
+/// The table mirrors the lexical heuristic's WRITE_KEYWORDS.
+fn keyword_write_kind(node_kind: &str) -> Option<WriteKind> {
+    let keyword = node_kind.strip_prefix("keyword_")?;
+    let upper = keyword.to_uppercase();
+    let kind = match upper.as_str() {
+        "INSERT" => WriteKind::Insert,
+        "UPDATE" => WriteKind::UpdateNoWhere,
+        "DELETE" => WriteKind::DeleteNoWhere,
+        "TRUNCATE" => WriteKind::Truncate,
+        "DROP" => WriteKind::Drop,
+        "CREATE" => WriteKind::Create,
+        "ALTER" => WriteKind::Alter,
+        "MERGE" | "REPLACE" | "GRANT" | "REVOKE" | "COMMENT" | "VACUUM" | "REINDEX"
+        | "ANALYZE" | "CALL" | "EXEC" | "EXECUTE" | "RENAME" => WriteKind::OtherDdl,
+        _ => return None,
+    };
+    Some(kind)
+}
+
+/// A DELETE is scoped when its statement's `from` clause carries a WHERE —
+/// the grammar places it as a child of the `from` sibling, not of the
+/// `delete` node itself.
+fn delete_kind(delete: tree_sitter::Node, in_cte: bool) -> WriteKind {
+    if in_cte {
+        return WriteKind::DeleteNoWhere;
+    }
+    let scoped = delete
+        .parent()
+        .map(|statement| {
+            let mut found = false;
+            let mut cursor = statement.walk();
+            for child in statement.children(&mut cursor) {
+                if child.kind() == "from" && has_direct_child(child, "where") {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        })
+        .unwrap_or(false);
+    if scoped {
+        WriteKind::Delete
+    } else {
+        WriteKind::DeleteNoWhere
+    }
+}
+
+fn has_direct_child(node: tree_sitter::Node, kind: &str) -> bool {
+    let mut found = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            found = true;
+            break;
+        }
+    }
+    found
+}
+
+/// Lexical fallback for statements the grammar cannot parse. Classification
+/// runs on a comment/string-stripped copy of the statement; read-keyword
+/// statements (SELECT/WITH/...) are additionally scanned for write keywords
+/// anywhere in the text.
+fn classify_sql_lexical(sql: &str) -> Option<WriteKind> {
+    let stripped = strip_comments_and_literals(sql);
+    let trimmed = stripped.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let tokens: Vec<String> = trimmed
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_uppercase())
+        .collect();
+    let first_keyword = tokens.first().map(String::as_str).unwrap_or("");
+
+    match first_keyword {
+        "SELECT" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "PRAGMA" | "WITH" => {
+            match scan_write_keywords(&tokens) {
+                Some(keyword) => Some(write_kind_for(keyword)),
+                None => Some(WriteKind::Select),
+            }
+        }
+        "INSERT" => Some(WriteKind::Insert),
+        "UPDATE" => Some(if has_where(&tokens) {
+            WriteKind::Update
+        } else {
+            WriteKind::UpdateNoWhere
         }),
-        "DELETE" => has_where(trimmed).map(|has| {
-            if has {
-                WriteKind::Delete
-            } else {
-                WriteKind::DeleteNoWhere
-            }
+        "DELETE" => Some(if has_where(&tokens) {
+            WriteKind::Delete
+        } else {
+            WriteKind::DeleteNoWhere
         }),
         "DROP" => Some(WriteKind::Drop),
         "TRUNCATE" => Some(WriteKind::Truncate),
         "ALTER" => Some(WriteKind::Alter),
         "CREATE" => Some(WriteKind::Create),
         _ => {
-            if is_ddl_keyword(&first_keyword) {
+            if is_ddl_keyword(first_keyword) {
                 Some(WriteKind::OtherDdl)
             } else {
-                None
+                // Unknown leading token (parenthesized statement, CALL, ...):
+                // fall back to the whole-text write scan so a write can't hide
+                // behind an unrecognized first keyword.
+                scan_write_keywords(&tokens).map(write_kind_for)
             }
         }
     }
 }
 
-fn has_where(sql: &str) -> Option<bool> {
-    let upper = sql.to_uppercase();
-    let after_where = upper.find(" WHERE ");
-    Some(after_where.is_some())
+/// Write keywords that disqualify a statement from the read-only class when
+/// they appear anywhere in the token stream.
+const WRITE_KEYWORDS: &[&str] = &[
+    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "TRUNCATE", "GRANT",
+    "REVOKE", "CREATE", "ALTER", "DROP", "COMMENT", "VACUUM", "REINDEX",
+    "ANALYZE", "CALL", "EXEC", "EXECUTE",
+];
+
+fn scan_write_keywords(tokens: &[String]) -> Option<&str> {
+    for (i, token) in tokens.iter().enumerate() {
+        if token == "UPDATE" && i > 0 && tokens[i - 1] == "FOR" {
+            continue;
+        }
+        if WRITE_KEYWORDS.contains(&token.as_str()) {
+            return Some(token.as_str());
+        }
+    }
+    None
+}
+
+/// Maps a write keyword found outside the leading position to a write kind.
+/// WHERE attribution inside a WITH subtree or a later batch statement is
+/// ambiguous, so UPDATE/DELETE land on the (destructive) NoWhere variants.
+fn write_kind_for(keyword: &str) -> WriteKind {
+    match keyword {
+        "INSERT" => WriteKind::Insert,
+        "UPDATE" => WriteKind::UpdateNoWhere,
+        "DELETE" => WriteKind::DeleteNoWhere,
+        "TRUNCATE" => WriteKind::Truncate,
+        "DROP" => WriteKind::Drop,
+        "CREATE" => WriteKind::Create,
+        "ALTER" => WriteKind::Alter,
+        _ => WriteKind::OtherDdl,
+    }
+}
+
+fn has_where(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| t == "WHERE")
+}
+
+/// Replaces `--`/`/* */` comments and `'…'`/`"…"`/`` `…` ``/`[…]` literals with
+/// spaces so keyword scans see only the statement's structure.
+fn strip_comments_and_literals(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\'' | '"' | '`' | '[' => {
+                i = skip_quoted(&chars, i, c);
+                out.push(' ');
+            }
+            '-' if chars.get(i + 1) == Some(&'-') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                out.push(' ');
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                let rest: String = chars[i + 2..].iter().collect();
+                match rest.find("*/") {
+                    Some(end) => i += 2 + end + 2,
+                    None => i = chars.len(),
+                }
+                out.push(' ');
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Skips a quoted literal starting at `chars[start]`, handling doubled quotes,
+/// MySQL backslash escapes, and `]`-terminated bracket identifiers.
+fn skip_quoted(chars: &[char], start: usize, quote: char) -> usize {
+    let mut i = start + 1;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' if quote == '\'' => i += 2,
+            c if c == quote && quote == '[' => return i + 1,
+            c if c == quote => {
+                if chars.get(i + 1) == Some(&quote) {
+                    i += 2;
+                } else {
+                    return i + 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    chars.len()
 }
 
 fn is_ddl_keyword(word: &str) -> bool {

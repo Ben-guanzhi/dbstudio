@@ -26,6 +26,36 @@ pub fn try_map_query_result<T>(
     }
 }
 
+/// One column's catalog facts in the shape every engine's listing query can
+/// produce. This is the uniform row layer the metadata operations are (and
+/// future op x type tables would be) built on: engines map their result cells
+/// onto it, and [`column_info`] performs the single engine-agnostic assembly.
+pub struct RawColumn {
+    pub name: String,
+    pub data_type: String,
+    pub ordinal: u32,
+    pub nullable: bool,
+    pub is_primary_key: bool,
+    pub default_value: Option<String>,
+}
+
+/// Assemble the engine-agnostic `ColumnInfo` from a driver's raw facts.
+///
+/// Kept in exactly one place: a new `ColumnInfo` field is now a change here
+/// plus the per-engine cell extraction, not five hand-copied struct literals.
+pub fn column_info(raw: RawColumn, table: &str) -> ColumnInfo {
+    ColumnInfo {
+        table_name: Some(table.to_string()),
+        comment: None,
+        name: raw.name,
+        data_type: raw.data_type,
+        ordinal: raw.ordinal,
+        nullable: raw.nullable,
+        is_primary_key: raw.is_primary_key,
+        default_value: raw.default_value,
+    }
+}
+
 /// Quote a SQL identifier with backticks (MySQL, SQLite).
 pub fn quote_backtick(value: &str) -> String {
     format!("`{}`", value.replace('`', "``"))

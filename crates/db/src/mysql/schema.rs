@@ -68,15 +68,18 @@ impl MySqlConnection {
                 .rows
                 .into_iter()
                 .enumerate()
-                .map(|(i, row)| ColumnInfo {
-                    name: row.cell_str(0),
-                    data_type: row.cell_str(1),
-                    ordinal: row.cell_u32(2, i as u32),
-                    nullable: !row.cell_is(3, "NO"),
-                    is_primary_key: row.cell_is(5, "PRI"),
-                    default_value: row.get(4).and_then(|c| c.value_if_not_null()),
-                    comment: None,
-                    table_name: Some(table.to_string()),
+                .map(|(i, row)| {
+                    crate::utils::column_info(
+                        crate::utils::RawColumn {
+                            name: row.cell_str(0),
+                            data_type: row.cell_str(1),
+                            ordinal: row.cell_u32(2, i as u32),
+                            nullable: !row.cell_is(3, "NO"),
+                            is_primary_key: row.cell_is(5, "PRI"),
+                            default_value: row.get(4).and_then(|c| c.value_if_not_null()),
+                        },
+                        table,
+                    )
                 })
                 .collect()),
             _ => Ok(vec![]),

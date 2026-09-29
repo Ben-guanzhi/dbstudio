@@ -338,7 +338,7 @@ impl ResultsPanel {
         self.stage_edit(sql, inverse_sql, "UPDATE".to_string(), diff, cx);
     }
 
-    /// Stage an edit SQL in the session's pending_edits buffer.
+    /// Stage an edit SQL in the session's pending edit ledger.
     pub(super) fn stage_edit(
         &mut self,
         sql: String,
@@ -358,7 +358,7 @@ impl ResultsPanel {
         };
         cx.update_global::<AppState, _>(|state, _cx| {
             if let Some(s) = state.active_session_mut_for(self.window_id) {
-                s.pending_edits.push(PendingWrite {
+                s.edits.stage(PendingWrite {
                     sql,
                     kind,
                     label,
@@ -379,35 +379,17 @@ impl ResultsPanel {
         crate::state::execute_query(sql, self.window_id, cx);
     }
 
-    /// Apply all pending edits by executing each SQL via the raw query path.
+    /// Apply all pending edits in order. Each edit leaves the pending buffer
+    /// and enters the undo stack only when its execution succeeded; the first
+    /// failure stops the batch and keeps the remaining edits pending.
     pub fn apply_all_pending(&mut self, cx: &mut Context<Self>) {
-        let edits: Vec<(String, String, String)> = cx.update_global::<AppState, _>(|state, _cx| {
-            match state.active_session_mut_for(self.window_id) {
-                Some(s) => {
-                    let records: Vec<(String, String, String)> = s
-                        .pending_edits
-                        .iter()
-                        .map(|e| (e.sql.clone(), e.inverse_sql.clone(), e.label.clone()))
-                        .collect();
-                    s.pending_edits.clear();
-                    records
-                }
-                None => Vec::new(),
-            }
+        let edits: Vec<PendingWrite> = cx.update_global::<AppState, _>(|state, _cx| {
+            state
+                .active_session_mut_for(self.window_id)
+                .map(|s| s.edits.pending().to_vec())
+                .unwrap_or_default()
         });
-        for (forward, inverse, label) in edits {
-            cx.update_global::<AppState, _>(|state, _cx| {
-                if let Some(s) = state.active_session_mut_for(self.window_id) {
-                    s.undo_stack.push(crate::state::guard::EditRecord {
-                        forward_sql: forward.clone(),
-                        inverse_sql: inverse,
-                        label: label.clone(),
-                    });
-                    s.redo_stack.clear();
-                }
-            });
-            crate::state::execute_raw_query(forward, self.window_id, cx);
-        }
+        crate::state::operations::apply_edits_sequentially(edits, self.window_id, cx);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().clear_modified();
             cx.notify();
@@ -418,41 +400,13 @@ impl ResultsPanel {
 
     /// Apply a single pending edit, leaving the remaining edits queued.
     pub fn apply_pending(&mut self, index: usize, cx: &mut Context<Self>) {
-        let removed = cx.update_global::<AppState, _>(|state, _cx| {
-            match state.active_session_mut_for(self.window_id) {
-                Some(s) => {
-                    if index < s.pending_edits.len() {
-                        let removed = s.pending_edits.remove(index);
-                        s.undo_stack.push(crate::state::guard::EditRecord {
-                            forward_sql: removed.sql.clone(),
-                            inverse_sql: removed.inverse_sql.clone(),
-                            label: removed.label.clone(),
-                        });
-                        s.redo_stack.clear();
-                        Some(removed)
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }
-        });
-        let Some(edit) = removed else {
-            return;
-        };
-        crate::state::execute_raw_query(edit.sql, self.window_id, cx);
-        let empty = cx.update_global::<AppState, _>(|state, _cx| {
+        let edit = cx.update_global::<AppState, _>(|state, _cx| {
             state
                 .active_session_for(self.window_id)
-                .map(|s| s.pending_edits.is_empty())
-                .unwrap_or(true)
+                .and_then(|s| s.edits.pending_at(index).cloned())
         });
-        if empty {
-            self.show_review_modal = false;
-            self.table.update(cx, |table, cx| {
-                table.delegate_mut().clear_modified();
-                cx.notify();
-            });
+        if let Some(edit) = edit {
+            crate::state::operations::apply_edits_sequentially(vec![edit], self.window_id, cx);
         }
         cx.notify();
     }
@@ -461,7 +415,7 @@ impl ResultsPanel {
     pub fn discard_all_pending(&mut self, cx: &mut Context<Self>) {
         cx.update_global::<AppState, _>(|state, _cx| {
             if let Some(s) = state.active_session_mut_for(self.window_id) {
-                s.pending_edits.clear();
+                s.edits.discard_pending();
             }
         });
         self.table.update(cx, |table, cx| {

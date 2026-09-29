@@ -287,6 +287,119 @@ mod guard_tests {
             false
         ));
     }
+
+    // ── 绕过回归：注释前缀、DML-CTE、注释伪造 WHERE、多语句批次 ──
+
+    #[test]
+    fn comment_prefix_cannot_hide_a_write() {
+        // Safe Mode 曾被 `--` 前缀完全绕过：首 token 是 `--`，落入未知分支返回 None。
+        assert_eq!(
+            classify_sql("-- hello
+DROP TABLE users;"),
+            Some(WriteKind::Drop)
+        );
+        assert_eq!(
+            classify_sql("/* header */ DELETE FROM users"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+        // 纯注释输入没有可执行语句。
+        assert_eq!(classify_sql("-- just a comment"), None);
+    }
+
+    #[test]
+    fn dml_cte_is_not_read_only() {
+        // `WITH` 曾一律归为 Select：数据修改 CTE 在 safe mode 下不弹确认直接执行。
+        assert_eq!(
+            classify_sql("WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+        assert_eq!(
+            classify_sql("WITH u AS (UPDATE users SET x = 1 RETURNING x) SELECT * FROM u"),
+            Some(WriteKind::UpdateNoWhere)
+        );
+        // 只读 CTE 仍是 Select。
+        assert_eq!(
+            classify_sql("WITH c AS (SELECT 1 AS x) SELECT * FROM c"),
+            Some(WriteKind::Select)
+        );
+    }
+
+    #[test]
+    fn comment_cannot_fake_a_where_clause() {
+        // 曾用 `upper.find(" WHERE ")` 判定：注释里的 WHERE 会让无界 DELETE
+        // 冒充有界写，在 safe mode 关闭的 dev 环境跳过确认。
+        assert_eq!(
+            classify_sql("DELETE FROM t /* WHERE */"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+        assert_eq!(
+            classify_sql("DELETE FROM t WHERE id = 1"),
+            Some(WriteKind::Delete)
+        );
+        // WHERE 前是换行也能识别（旧实现只匹配 " WHERE "）。
+        assert_eq!(
+            classify_sql("DELETE FROM t
+WHERE id = 1"),
+            Some(WriteKind::Delete)
+        );
+    }
+
+    #[test]
+    fn batch_and_hidden_writes_are_caught() {
+        assert_eq!(
+            classify_sql("SELECT 1; DROP TABLE x"),
+            Some(WriteKind::Drop)
+        );
+        // 字符串与标识符里的写关键字不误判。
+        assert_eq!(
+            classify_sql("SELECT 'DROP TABLE x' AS note FROM t"),
+            Some(WriteKind::Select)
+        );
+        assert_eq!(
+            classify_sql("SELECT updated_at, deleted FROM t"),
+            Some(WriteKind::Select)
+        );
+        // SELECT ... FOR UPDATE 是锁定读，不是写。
+        assert_eq!(
+            classify_sql("SELECT * FROM t WHERE id = 1 FOR UPDATE"),
+            Some(WriteKind::Select)
+        );
+        // 括号包裹的写语句不再落到未知分支。
+        assert_eq!(
+            classify_sql("(DELETE FROM t)"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+    }
+
+    #[test]
+    fn where_attribution_follows_the_syntax_tree() {
+        // 子查询里的 WHERE 只属于子查询：主语句仍是无界写（保守归类）。
+        // 旧启发式只看全文有没有 "WHERE"，会把无界 UPDATE 冒充有界写，
+        // 在 safe mode 关闭的 Dev 环境跳过确认。
+        assert_eq!(
+            classify_sql("UPDATE t SET x = (SELECT MAX(id) FROM u WHERE y = 1)"),
+            Some(WriteKind::UpdateNoWhere)
+        );
+        // 反过来，DELETE 的 WHERE（含子查询）是真有界。
+        assert_eq!(
+            classify_sql("DELETE FROM t WHERE id IN (SELECT id FROM u)"),
+            Some(WriteKind::Delete)
+        );
+        // EXPLAIN 前缀后的写语句仍是写，作用域照常判定。
+        assert_eq!(
+            classify_sql("EXPLAIN DELETE FROM t"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+        assert_eq!(
+            classify_sql("EXPLAIN SELECT * FROM t"),
+            Some(WriteKind::Select)
+        );
+        // CTE 内的写语句作用归属不明确，一律按无界（破坏性）处理。
+        assert_eq!(
+            classify_sql("WITH d AS (DELETE FROM users WHERE id = 1 RETURNING *) SELECT * FROM d"),
+            Some(WriteKind::DeleteNoWhere)
+        );
+    }
 }
 
 #[cfg(test)]

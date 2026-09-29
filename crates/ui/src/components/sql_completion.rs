@@ -133,7 +133,7 @@ impl SqlCompletionProvider {
 
     /// Replaces the schema-derived completion items (table names, etc.).
     pub fn set_schema_completions(&self, items: Vec<CompletionItem>) {
-        let mut guard = self.completions.write().unwrap();
+        let mut guard = self.completions.write().unwrap_or_else(|e| e.into_inner());
         guard.retain(|item| item.kind != Some(CompletionItemKind::CLASS));
         guard.extend(items);
     }
@@ -192,7 +192,7 @@ impl CompletionProvider for SqlCompletionProvider {
             return Task::ready(Ok(CompletionResponse::Array(vec![])));
         }
 
-        let items = self.completions.read().unwrap();
+        let items = self.completions.read().unwrap_or_else(|e| e.into_inner());
         let matches = Self::filter_by_prefix(&items, &trigger_character, 10);
         Task::ready(Ok(CompletionResponse::Array(matches)))
     }
