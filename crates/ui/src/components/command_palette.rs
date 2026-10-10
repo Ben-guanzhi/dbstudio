@@ -7,6 +7,7 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Icon, IconName,
 };
 
+use crate::fold::contains_ignore_case;
 use crate::state::AppState;
 
 pub enum CommandPaletteEvent {
@@ -40,6 +41,11 @@ pub struct CommandPalette {
     input_state: Entity<InputState>,
     items: Vec<PaletteItem>,
     filtered_items: Vec<usize>,
+    /// Whether `items` still reflects `AppState`. While the palette is closed
+    /// the notification handler only sets this flag: a closed palette renders
+    /// nothing, so rebuilding the full item list on every `AppState` write
+    /// (a status-bar change, a result landing) would be invisible work.
+    items_dirty: bool,
     selected_index: usize,
     is_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -61,8 +67,13 @@ impl CommandPalette {
         let _subscriptions = vec![
             cx.subscribe_in(&input_state, window, Self::on_input_event),
             cx.observe_global::<AppState>(move |this, cx| {
-                this.build_items(cx);
-                this.filter_items(cx);
+                if this.is_open {
+                    this.build_items(cx);
+                    this.filter_items(cx);
+                    this.items_dirty = false;
+                } else {
+                    this.items_dirty = true;
+                }
                 cx.notify();
             }),
         ];
@@ -72,6 +83,7 @@ impl CommandPalette {
             input_state,
             items: Vec::new(),
             filtered_items: Vec::new(),
+            items_dirty: false,
             selected_index: 0,
             is_open: false,
             _subscriptions,
@@ -89,7 +101,7 @@ impl CommandPalette {
         for table in state.tables_for(self.window_id) {
             self.items.push(PaletteItem {
                 label: table.name.clone(),
-                detail: Some(format!("Table 路 {}", table.table_type.display_name())),
+                detail: Some(format!("Table · {}", table.table_type.display_name())),
                 icon: IconName::LayoutDashboard,
                 action: PaletteAction::SelectTable(table.name.clone()),
             });
@@ -111,11 +123,11 @@ impl CommandPalette {
             let mut detail = format!("{}@{}", conn.username, conn.host);
             if let Some(group) = &conn.group {
                 if !group.is_empty() {
-                    detail.push_str(&format!(" 路 {}", group));
+                    detail.push_str(&format!(" · {}", group));
                 }
             }
             if !conn.tags.is_empty() {
-                detail.push_str(&format!(" 路 #{}", conn.tags.join(" #")));
+                detail.push_str(&format!(" · #{}", conn.tags.join(" #")));
             }
             self.items.push(PaletteItem {
                 label: conn.name.clone(),
@@ -185,31 +197,17 @@ impl CommandPalette {
             String::new()
         };
 
-        let query_lower = query.to_lowercase();
-
-        self.filtered_items = if query_lower.is_empty() {
-            (0..self.items.len()).collect()
-        } else {
-            self.items
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| {
-                    item.label.to_lowercase().contains(&query_lower)
-                        || item
-                            .detail
-                            .as_ref()
-                            .map(|d| d.to_lowercase().contains(&query_lower))
-                            .unwrap_or(false)
-                })
-                .map(|(ix, _)| ix)
-                .collect()
-        };
+        self.filtered_items = filter_indices(&self.items, &query);
 
         self.selected_index = 0;
     }
 
     pub fn open(&mut self, cx: &mut Context<Self>) {
         self.is_open = true;
+        if self.items_dirty {
+            self.build_items(cx);
+            self.items_dirty = false;
+        }
         self.filter_items(cx);
         cx.notify();
     }
@@ -243,8 +241,17 @@ impl CommandPalette {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if matches!(event, InputEvent::PressEnter { .. }) {
-            self.confirm_selection(cx);
+        match event {
+            // The list is a function of the query, so every edit has to
+            // re-evaluate it: nothing else in this entity recomputes
+            // `filtered_items` when the text changes, and the rows a stale
+            // list shows are the ones Enter then acts on.
+            InputEvent::Change => {
+                self.filter_items(cx);
+                cx.notify();
+            }
+            InputEvent::PressEnter { .. } => self.confirm_selection(cx),
+            _ => {}
         }
     }
 
@@ -290,6 +297,28 @@ impl CommandPalette {
             self.close(cx);
         }
     }
+}
+
+/// The rows a query leaves visible, as indices into `items`. An empty query
+/// shows everything in build order; otherwise a row matches on its label or
+/// its detail, case-insensitively.
+fn filter_indices(items: &[PaletteItem], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..items.len()).collect();
+    }
+    let query_lower = query.to_lowercase();
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            contains_ignore_case(&item.label, &query_lower)
+                || item
+                    .detail
+                    .as_ref()
+                    .is_some_and(|d| contains_ignore_case(d, &query_lower))
+        })
+        .map(|(ix, _)| ix)
+        .collect()
 }
 
 impl Render for CommandPalette {
@@ -413,5 +442,72 @@ impl Render for CommandPalette {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filter_indices;
+    use super::{PaletteAction, PaletteItem};
+    use gpui_component::IconName;
+
+    fn row(label: &str, detail: &str) -> PaletteItem {
+        PaletteItem {
+            label: label.to_string(),
+            detail: (!detail.is_empty()).then(|| detail.to_string()),
+            icon: IconName::SquareTerminal,
+            action: PaletteAction::RunCommand(label.to_string()),
+        }
+    }
+
+    fn corpus() -> Vec<PaletteItem> {
+        vec![
+            row("users", "Table · public"),
+            row("orders", "Table · public"),
+            row("Execute Query", "Execute the current SQL query"),
+            row("Clear History", "Clear query history"),
+            row("audit_log", ""),
+        ]
+    }
+
+    #[test]
+    fn an_empty_query_shows_every_row_in_build_order() {
+        let items = corpus();
+        assert_eq!(filter_indices(&items, ""), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_longer_query_never_adds_rows_back() {
+        // The palette recomputes this list on every edit, so a prefix of what
+        // the user has typed must never match more than the longer text does.
+        let items = corpus();
+        let mut prefix = String::new();
+        let mut previous = items.len();
+        for ch in "quer".chars() {
+            prefix.push(ch);
+            let hits = filter_indices(&items, &prefix).len();
+            assert!(
+                hits <= previous,
+                "{prefix:?} matched {hits}, {previous} before"
+            );
+            previous = hits;
+        }
+        assert_eq!(filter_indices(&items, "quer"), vec![2, 3]);
+    }
+
+    #[test]
+    fn matching_ignores_case_and_reads_the_detail_too() {
+        let items = corpus();
+        assert_eq!(filter_indices(&items, "EXECUTE"), vec![2]);
+        // "public" lives only in the detail column; "table ·" exercises the
+        // non-ASCII path of the fold matcher.
+        assert_eq!(filter_indices(&items, "public"), vec![0, 1]);
+        assert_eq!(filter_indices(&items, "TABLE · PUB"), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_query_that_matches_nothing_shows_nothing() {
+        let items = corpus();
+        assert!(filter_indices(&items, "zzz").is_empty());
     }
 }

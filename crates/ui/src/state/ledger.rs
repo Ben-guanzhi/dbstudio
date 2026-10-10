@@ -164,14 +164,6 @@ mod tests {
         }
     }
 
-    fn rec(sql: &str, inverse: &str, label: &str) -> EditRecord {
-        EditRecord {
-            forward_sql: sql.to_string(),
-            inverse_sql: inverse.to_string(),
-            label: label.to_string(),
-        }
-    }
-
     #[test]
     fn stage_and_apply_moves_edit_to_undo() {
         let mut l = EditLedger::new();

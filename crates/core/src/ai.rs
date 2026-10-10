@@ -221,13 +221,48 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let config = self.config.clone();
         let messages = messages.to_vec();
         let (tx, rx) = async_channel::bounded::<Result<CompletionResponse>>(1);
-        std::thread::spawn(move || {
-            let _ = tx.try_send(openai_compatible_chat(&config, &messages));
-        });
+        chat_jobs()
+            .send(Box::new(move || {
+                let _ = tx.try_send(openai_compatible_chat(&config, &messages));
+            }))
+            .map_err(|_| anyhow::anyhow!("AI worker pool is gone"))?;
         rx.recv()
             .await
-            .map_err(|err| anyhow::anyhow!("AI worker thread closed: {err}"))?
+            .map_err(|err| anyhow::anyhow!("AI worker died before answering: {err}"))?
     }
+}
+
+/// Chat requests are bridged onto a small pool of named worker threads that
+/// the process builds once and keeps, instead of the old fresh OS thread per
+/// request: an LLM call is seconds of socket wait, and every keystroke-adjacent
+/// retry used to pay a thread spawn for it while concurrent requests could
+/// grow without any ceiling past the pool's size.
+type ChatJob = Box<dyn FnOnce() + Send + 'static>;
+
+const CHAT_POOL_SIZE: usize = 4;
+
+fn chat_jobs() -> &'static std::sync::mpsc::Sender<ChatJob> {
+    static POOL: std::sync::OnceLock<std::sync::mpsc::Sender<ChatJob>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<ChatJob>();
+        // std's Receiver is not Sync, so the hand-off lock is re-taken per
+        // pick-up; the guard is dropped before the job runs, which keeps the
+        // workers working in parallel while only one waits on the channel.
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        for id in 0..CHAT_POOL_SIZE {
+            let rx = rx.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("ai-worker-{id}"))
+                .spawn(move || loop {
+                    let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
+                });
+        }
+        tx
+    })
 }
 
 /// Build a provider from a stored [`LlmConfig`]. Unknown provider names fall
@@ -247,8 +282,10 @@ mod tests {
 
     #[test]
     fn provider_for_recognizes_supported_backends() {
-        let mut config = LlmConfig::default();
-        config.provider = "openai".into();
+        let mut config = LlmConfig {
+            provider: "openai".into(),
+            ..Default::default()
+        };
         assert_eq!(provider_for(&config).name(), "openai");
         config.provider = "ollama".into();
         assert_eq!(provider_for(&config).name(), "ollama");
@@ -258,10 +295,11 @@ mod tests {
 
     #[test]
     fn endpoint_defaults_per_provider() {
-        let mut config = LlmConfig::default();
-        config.provider = "openai".into();
-        config.base_url = None;
-        config.model = None;
+        let mut config = LlmConfig {
+            provider: "openai".into(),
+            model: None,
+            ..Default::default()
+        };
         let (url, model) = endpoint_for(&config);
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
         assert_eq!(model, "gpt-4o-mini");
@@ -284,5 +322,29 @@ mod tests {
         assert_eq!(role_str(&Role::System), "system");
         assert_eq!(role_str(&Role::User), "user");
         assert_eq!(role_str(&Role::Assistant), "assistant");
+    }
+
+    // The pool is built once on the first request and keeps working across
+    // many: this submits more jobs than the pool is wide and expects every
+    // result back. If the hand-off lock were held across the job, jobs past
+    // the pool size would still complete - what it would not do is finish
+    // them in parallel; liveness is what this pins against a deadlock.
+    #[test]
+    fn chat_pool_completes_more_jobs_than_it_has_workers() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let submitted = (CHAT_POOL_SIZE * 2) as i32;
+        for i in 0..submitted {
+            let tx = done_tx.clone();
+            chat_jobs()
+                .send(Box::new(move || {
+                    let _ = tx.send(i);
+                }))
+                .unwrap();
+        }
+        drop(done_tx);
+        let mut done: Vec<i32> = done_rx.iter().collect();
+        done.sort_unstable();
+        let expected: Vec<i32> = (0..submitted).collect();
+        assert_eq!(done, expected, "every submitted job must run");
     }
 }

@@ -375,6 +375,12 @@ impl VimBuf {
 
     fn push_snapshot(&mut self) {
         self.undo_stack.push(self.text.clone());
+        // Bound the undo stack: a long editing session would otherwise grow it
+        // without limit, each entry a full copy of the buffer.
+        const MAX_UNDO: usize = 100;
+        if self.undo_stack.len() > MAX_UNDO {
+            self.undo_stack.remove(0);
+        }
         self.redo_stack.clear();
     }
 

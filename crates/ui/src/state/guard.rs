@@ -232,8 +232,8 @@ fn keyword_write_kind(node_kind: &str) -> Option<WriteKind> {
         "DROP" => WriteKind::Drop,
         "CREATE" => WriteKind::Create,
         "ALTER" => WriteKind::Alter,
-        "MERGE" | "REPLACE" | "GRANT" | "REVOKE" | "COMMENT" | "VACUUM" | "REINDEX"
-        | "ANALYZE" | "CALL" | "EXEC" | "EXECUTE" | "RENAME" => WriteKind::OtherDdl,
+        "MERGE" | "REPLACE" | "GRANT" | "REVOKE" | "COMMENT" | "VACUUM" | "REINDEX" | "ANALYZE"
+        | "CALL" | "EXEC" | "EXECUTE" | "RENAME" => WriteKind::OtherDdl,
         _ => return None,
     };
     Some(kind)
@@ -334,9 +334,8 @@ fn classify_sql_lexical(sql: &str) -> Option<WriteKind> {
 /// Write keywords that disqualify a statement from the read-only class when
 /// they appear anywhere in the token stream.
 const WRITE_KEYWORDS: &[&str] = &[
-    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "TRUNCATE", "GRANT",
-    "REVOKE", "CREATE", "ALTER", "DROP", "COMMENT", "VACUUM", "REINDEX",
-    "ANALYZE", "CALL", "EXEC", "EXECUTE",
+    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "TRUNCATE", "GRANT", "REVOKE", "CREATE",
+    "ALTER", "DROP", "COMMENT", "VACUUM", "REINDEX", "ANALYZE", "CALL", "EXEC", "EXECUTE",
 ];
 
 fn scan_write_keywords(tokens: &[String]) -> Option<&str> {

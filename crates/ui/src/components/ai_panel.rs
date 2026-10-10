@@ -75,7 +75,6 @@ pub struct AiPanel {
     messages: Vec<AiMessage>,
     active_tab: AiTab,
     is_loading: bool,
-    current_sql: String,
     show_settings: bool,
     selected_provider: String,
     provider_select: Entity<SelectState<Vec<ProviderOption>>>,
@@ -117,11 +116,11 @@ impl AiPanel {
                 .clean_on_escape()
         });
 
-        let _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
-            let state = cx.global::<AppState>();
-            if let Some(session) = state.active_session_for(this.window_id) {
-                this.current_sql = session.editor_text.clone();
-            }
+        // The panel reads the editor buffer when it needs it (see `current_sql`),
+        // so this handler has nothing to copy. It stays because the two action
+        // buttons' disabled state depends on a buffer owned by another entity,
+        // and only a repaint request keeps them in step with it.
+        let _subscriptions = vec![cx.observe_global::<AppState>(move |_this, cx| {
             cx.notify();
         })];
 
@@ -153,7 +152,6 @@ impl AiPanel {
             messages: Vec::new(),
             active_tab: AiTab::Chat,
             is_loading: false,
-            current_sql: String::new(),
             show_settings: false,
             selected_provider: match config.provider.as_str() {
                 "ollama" => "ollama".to_string(),
@@ -235,6 +233,27 @@ impl AiPanel {
         }
     }
 
+    /// The SQL the two action buttons explain/optimize: the editor buffer of
+    /// the session this window is on. Read at use time rather than mirrored -
+    /// the copy used to be retaken on every `AppState` notification, which
+    /// copied a whole script each time to have on hand for four sites that all
+    /// already hold `cx`.
+    fn current_sql(&self, cx: &Context<Self>) -> String {
+        cx.global::<AppState>()
+            .active_session_for(self.window_id)
+            .map(|s| s.editor_text.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether [`Self::current_sql`] has anything in it. This is the only thing
+    /// the render path needs, so it does not go through a copy: `trim` stops at
+    /// the first non-whitespace character from each end.
+    fn has_sql(&self, cx: &Context<Self>) -> bool {
+        cx.global::<AppState>()
+            .active_session_for(self.window_id)
+            .is_some_and(|s| !s.editor_text.trim().is_empty())
+    }
+
     /// Summarize the active session's loaded schemas as LLM context.
     fn schema_context(&self, cx: &Context<Self>) -> String {
         let schemas = cx.global::<AppState>().table_schemas_for(self.window_id);
@@ -306,12 +325,13 @@ impl AiPanel {
     }
 
     fn explain_sql(&mut self, cx: &mut Context<Self>) {
-        if self.current_sql.trim().is_empty() {
+        let sql = self.current_sql(cx);
+        if sql.trim().is_empty() {
             return;
         }
         self.messages.push(AiMessage {
             role: MessageRole::User,
-            content: format!("Explain this SQL:\n```sql\n{}\n```", self.current_sql),
+            content: format!("Explain this SQL:\n```sql\n{}\n```", sql),
         });
         let prompt = vec![
             Self::system_prompt(),
@@ -324,7 +344,7 @@ impl AiPanel {
                 content: format!(
                     "Explain this SQL query, point out performance issues and suggest \
                      improvements:\n```sql\n{}\n```",
-                    self.current_sql
+                    sql
                 ),
             },
         ];
@@ -332,12 +352,13 @@ impl AiPanel {
     }
 
     fn optimize_sql(&mut self, cx: &mut Context<Self>) {
-        if self.current_sql.trim().is_empty() {
+        let sql = self.current_sql(cx);
+        if sql.trim().is_empty() {
             return;
         }
         self.messages.push(AiMessage {
             role: MessageRole::User,
-            content: format!("Optimize this SQL:\n```sql\n{}\n```", self.current_sql),
+            content: format!("Optimize this SQL:\n```sql\n{}\n```", sql),
         });
         let prompt = vec![
             Self::system_prompt(),
@@ -350,7 +371,7 @@ impl AiPanel {
                 content: format!(
                     "Rewrite this SQL query for better performance. Return ONLY the \
                      optimized SQL:\n```sql\n{}\n```",
-                    self.current_sql
+                    sql
                 ),
             },
         ];
@@ -447,7 +468,7 @@ impl Render for AiPanel {
                             .label("Explain")
                             .small()
                             .ghost()
-                            .disabled(self.current_sql.trim().is_empty() || self.is_loading)
+                            .disabled(!self.has_sql(cx) || self.is_loading)
                             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                                 this.explain_sql(cx);
                             })),
@@ -457,7 +478,7 @@ impl Render for AiPanel {
                             .label("Optimize")
                             .small()
                             .ghost()
-                            .disabled(self.current_sql.trim().is_empty() || self.is_loading)
+                            .disabled(!self.has_sql(cx) || self.is_loading)
                             .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                                 this.optimize_sql(cx);
                             })),

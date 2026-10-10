@@ -50,7 +50,11 @@ impl ConnectionList {
     ) -> Self {
         let mut _subscriptions = vec![cx.observe_global::<AppState>(move |this, cx| {
             let state = cx.global::<AppState>();
-            this.connections = state.saved_connections.clone();
+            // `observe_global` fires on *any* write to `AppState`, so only
+            // re-snapshot when the saved list itself moved.
+            if state.saved_connections != this.connections {
+                this.connections = state.saved_connections.clone();
+            }
             if let Some(selected) = &this.selected_id {
                 if !this.connections.iter().any(|c| &c.id == selected) {
                     this.selected_id = None;

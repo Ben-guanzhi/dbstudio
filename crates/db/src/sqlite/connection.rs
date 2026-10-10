@@ -7,7 +7,7 @@ use rusqlite::params;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use crate::utils::{finalize_query_result, is_select_query};
+use crate::utils::{finalize_query_result_capped, is_select_query};
 
 pub struct SqliteConnection {
     pub(crate) conn: Arc<Mutex<Option<rusqlite::Connection>>>,
@@ -79,6 +79,16 @@ impl SqliteConnection {
     }
 
     pub async fn execute(&self, sql: &str) -> Result<SqlResult> {
+        self.execute_capped(sql, Some(MAX_RESULT_ROWS)).await
+    }
+
+    /// Fetch every row `sql` returns, with no display cap. Export-only: the
+    /// rows are materialized, so the caller owns the memory cost.
+    pub async fn execute_export(&self, sql: &str) -> Result<SqlResult> {
+        self.execute_capped(sql, None).await
+    }
+
+    async fn execute_capped(&self, sql: &str, max_rows: Option<usize>) -> Result<SqlResult> {
         let conn = self.conn.clone();
         let sql = sql.to_string();
         let start = Instant::now();
@@ -105,13 +115,18 @@ impl SqliteConnection {
                     // Same +1 probe as the Postgres/MySQL drivers: rusqlite
                     // streams rows lazily, so stopping here bounds memory
                     // while letting `truncate_rows` flag `truncated`.
-                    if rows.len() > MAX_RESULT_ROWS {
-                        break;
+                    // `max_rows == None` (export) has no probe to stop at.
+                    if let Some(cap) = max_rows {
+                        if rows.len() > cap {
+                            break;
+                        }
                     }
                 }
 
                 let elapsed = start.elapsed().as_millis();
-                Ok(finalize_query_result(columns, rows, sql, elapsed))
+                Ok(finalize_query_result_capped(
+                    columns, rows, sql, elapsed, max_rows,
+                ))
             } else {
                 let rows_affected = c.execute(&sql, params![])? as u64;
                 let elapsed = start.elapsed().as_millis();

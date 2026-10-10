@@ -19,7 +19,7 @@ pub use dbstudio_storage::types::{ConnectionInfo, ConnectionStatus};
 pub use operations::*;
 
 /// A saved favorite query.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FavoriteEntry {
     pub id: i64,
     pub name: String,
@@ -75,7 +75,16 @@ pub struct ConnectionSession {
     pub connection_state: ConnectionStatus,
     pub active_database: Option<String>,
     pub databases: Vec<DatabaseInfo>,
-    pub tables: Vec<TableInfo>,
+    /// The table list, behind a handle so observers can tell "the schema
+    /// changed" from "some other field of `AppState` was written" in O(1).
+    ///
+    /// Every mutable access to `AppState` notifies *all* its observers, and two
+    /// of them mirror this list (the SQL editor's completion source, the tables
+    /// tree). Sharing one `Arc<Vec<_>>` instead of re-cloning it per observer
+    /// also means a writer can no longer mutate the list in place without
+    /// changing its address: while an observer holds a clone the refcount is
+    /// above one, so `Arc::make_mut` copy-on-writes onto a fresh address.
+    pub tables: Arc<Vec<TableInfo>>,
     pub table_schemas: HashMap<String, TableSchema>,
     pub last_result: Option<Arc<SqlResult>>,
     pub is_executing: bool,
@@ -101,7 +110,7 @@ impl ConnectionSession {
             connection_state: ConnectionStatus::Disconnected,
             active_database: None,
             databases: Vec::new(),
-            tables: Vec::new(),
+            tables: Arc::new(Vec::new()),
             table_schemas: HashMap::new(),
             last_result: None,
             is_executing: false,
@@ -235,9 +244,17 @@ impl AppState {
     }
 
     pub fn tables_for(&self, window_id: u64) -> &[TableInfo] {
-        self.active_session_for(window_id)
-            .map(|s| s.tables.as_slice())
-            .unwrap_or(&[])
+        self.tables_arc_for(window_id).as_slice()
+    }
+
+    /// The table list as a shared handle. Observers that only need to know
+    /// *whether it changed* compare this with [`Arc::ptr_eq`] instead of
+    /// re-scanning every table on every `AppState` notification.
+    pub fn tables_arc_for(&self, window_id: u64) -> &Arc<Vec<TableInfo>> {
+        match self.active_session_for(window_id) {
+            Some(s) => &s.tables,
+            None => empty_tables(),
+        }
     }
 
     pub fn table_schemas_for(&self, window_id: u64) -> &HashMap<String, TableSchema> {
@@ -291,9 +308,16 @@ impl AppState {
 static EMPTY_SCHEMAS: std::sync::OnceLock<HashMap<String, TableSchema>> =
     std::sync::OnceLock::new();
 static EMPTY_WINDOW: std::sync::OnceLock<WindowState> = std::sync::OnceLock::new();
+static EMPTY_TABLES: std::sync::OnceLock<Arc<Vec<TableInfo>>> = std::sync::OnceLock::new();
 
 fn empty_schemas() -> &'static HashMap<String, TableSchema> {
     EMPTY_SCHEMAS.get_or_init(HashMap::new)
+}
+
+/// One shared empty list, so a window with no session has a stable address for
+/// its observers to compare against instead of a fresh allocation per call.
+fn empty_tables() -> &'static Arc<Vec<TableInfo>> {
+    EMPTY_TABLES.get_or_init(|| Arc::new(Vec::new()))
 }
 
 impl Global for AppState {}
@@ -371,4 +395,76 @@ impl AppState {
 /// Initialize all global UI state.
 pub fn init(cx: &mut App) {
     AppState::init(cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{empty_tables, ConnectionSession};
+    use dbstudio_core::schema::{TableInfo, TableType};
+    use std::sync::Arc;
+
+    fn table(name: &str) -> TableInfo {
+        TableInfo {
+            name: name.to_string(),
+            schema: Some("public".to_string()),
+            database: Some("app".to_string()),
+            table_type: TableType::Table,
+            row_count: Some(1),
+            comment: None,
+        }
+    }
+
+    /// The premise the observers' `Arc::ptr_eq` fast path rests on: as long as a
+    /// consumer holds the list the refcount is above one, so a writer that
+    /// mutates in place through `Arc::make_mut` is pushed onto a *new* address
+    /// and the consumer's own view is left untouched.
+    #[test]
+    fn a_shared_table_list_copy_on_writes_onto_a_new_address() {
+        let mut tables = Arc::new(vec![table("orders")]);
+        let mirror = Arc::clone(&tables);
+        let before = Arc::as_ptr(&tables);
+
+        Arc::make_mut(&mut tables).push(table("users"));
+
+        assert_ne!(Arc::as_ptr(&tables), before, "make_mut reused the address");
+        assert_ne!(Arc::as_ptr(&tables), Arc::as_ptr(&mirror));
+        assert_eq!(
+            mirror.len(),
+            1,
+            "the mirrored list was mutated through the handle"
+        );
+        assert_eq!(tables.len(), 2);
+    }
+
+    /// The other half of the same argument, kept honest: in-place mutation *is*
+    /// possible while the refcount is one. That is only reachable when no
+    /// observer mirrors this list, and then the observer's handle is a different
+    /// allocation anyway - so the pointer probe says "look", and content still
+    /// decides. A pointer fast path can therefore skip work, never a change.
+    #[test]
+    fn an_unshared_table_list_mutates_in_place() {
+        let mut tables = Arc::new(vec![table("orders")]);
+        let before = Arc::as_ptr(&tables);
+
+        Arc::make_mut(&mut tables).push(table("users"));
+
+        assert_eq!(Arc::as_ptr(&tables), before);
+        assert_eq!(tables.len(), 2);
+    }
+
+    #[test]
+    fn a_session_starts_on_its_own_empty_handle() {
+        let session = ConnectionSession::new(1, "main");
+
+        assert!(session.tables.is_empty());
+        // Distinct from the shared no-session handle, so an observer that
+        // settled on the empty one re-checks content when a session appears.
+        assert_ne!(Arc::as_ptr(&session.tables), Arc::as_ptr(empty_tables()));
+    }
+
+    #[test]
+    fn the_shared_empty_handle_does_not_move() {
+        assert!(empty_tables().is_empty());
+        assert_eq!(Arc::as_ptr(empty_tables()), Arc::as_ptr(empty_tables()));
+    }
 }

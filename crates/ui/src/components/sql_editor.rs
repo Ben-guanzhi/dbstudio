@@ -10,6 +10,7 @@ use gpui_component::{
 };
 use lsp_types::{CompletionItem, CompletionItemKind};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::components::sql_completion::SqlCompletionProvider;
 use crate::components::vim::{VimBuf, VimMode};
@@ -29,6 +30,12 @@ pub struct Editor {
     db_select: Entity<SelectState<Vec<SharedString>>>,
     is_executing: bool,
     active_connection: Option<String>,
+    /// Handle to the table list this editor last handed to the completion
+    /// provider. GPUI notifies every `observe_global` handler on *any* mutable
+    /// access to `AppState`, and a refresh rebuilds one 504-byte
+    /// `CompletionItem` per table plus its lowercase index; sharing the
+    /// `Arc<Vec<_>>` lets an unchanged schema cost one pointer compare.
+    tables: Arc<Vec<dbstudio_core::schema::TableInfo>>,
     /// The session id whose editor buffer is currently loaded, used to detect
     /// tab switches so per-session buffers are swapped in/out.
     current_session_id: Option<u64>,
@@ -68,7 +75,21 @@ impl Editor {
                 let state = cx.global::<AppState>();
                 this.is_executing = state.is_executing_for(this.window_id);
                 this.active_connection = state.active_connection_name_for(this.window_id).cloned();
-                refresh_schema_completions(&this.provider, state.tables_for(this.window_id));
+                // Rebuilding the list costs one `CompletionItem` (504 B) per
+                // table plus a re-index, so only do it when the schema moved -
+                // any other `AppState` write reaches this handler too. A new
+                // handle alone is not enough to rebuild on (a refresh can hand
+                // back the same schema), and an unchanged handle cannot have
+                // moved, so the pointer decides when to look and the content
+                // decides whether to rebuild.
+                let tables = state.tables_arc_for(this.window_id);
+                if !Arc::ptr_eq(tables, &this.tables) {
+                    let changed = tables.as_slice() != this.tables.as_slice();
+                    this.tables = Arc::clone(tables);
+                    if changed {
+                        refresh_schema_completions(&this.provider, &this.tables);
+                    }
+                }
                 cx.notify();
             }),
             cx.observe_global_in::<AppState>(window, move |this, win, cx| {
@@ -103,6 +124,12 @@ impl Editor {
             db_select,
             is_executing: state.is_executing_for(window_id),
             active_connection: state.active_connection_name_for(window_id).cloned(),
+            // Empty on purpose: it mirrors what the provider holds, and nothing
+            // has been pushed there yet. Starting it in sync with `AppState`
+            // would leave the provider permanently without table completions.
+            // The handle is a fresh allocation rather than the state's, so the
+            // first notification adopts the state's pointer and re-evaluates.
+            tables: Arc::new(Vec::new()),
             current_session_id: state.window_state(window_id).active_session,
             vim_on,
             vim: VimBuf::default(),
@@ -656,7 +683,7 @@ fn refresh_schema_completions(
             let detail = table
                 .schema
                 .as_deref()
-                .map(|schema| format!("{} 路 {}", schema, table.table_type.display_name()))
+                .map(|schema| format!("{} · {}", schema, table.table_type.display_name()))
                 .unwrap_or_else(|| table.table_type.display_name().to_string());
             CompletionItem {
                 label: table.name.clone(),

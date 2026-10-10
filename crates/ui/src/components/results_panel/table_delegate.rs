@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use dbstudio_core::result::CellType;
 
+use crate::fold::{contains_ignore_case, fold_into_chars, starts_with_ignore_case};
+
 use super::*;
 
 /// Comparison operator for a per-column result filter.
@@ -49,97 +51,12 @@ pub struct ColumnFilter {
     pub value: String,
 }
 
-/// Does folding `s` depend on position? Greek capital sigma is the one
-/// conditional lowercase mapping in Unicode (`ς` at the end of a word, `σ`
-/// elsewhere); everything else, including the two-code-point `U+0130` mapping,
-/// folds per character exactly. Allocation-free.
-fn needs_contextual_fold(s: &str) -> bool {
-    s.contains('\u{3a3}')
-}
-
-/// `s.to_lowercase()` into a char buffer, in one allocation when the string is
-/// ASCII or folds context-free.
-///
-/// The plain `s.to_lowercase().chars().collect()` path pays for a `String` copy
-/// *and* a `Vec` that grows by doubling, which is three to twenty-odd
-/// allocations per cell on a path that visits every cell on every keystroke.
-/// Measured: 40,000 -> 10,000 allocations per 10,000 ASCII cells, 218,890 ->
-/// 10,001 per 10,000 CJK cells.
-fn fold_into_chars(s: &str) -> Vec<char> {
-    if s.is_ascii() {
-        let mut out = Vec::with_capacity(s.len());
-        out.extend(s.bytes().map(|b| b.to_ascii_lowercase() as char));
-        return out;
-    }
-    if needs_contextual_fold(s) {
-        return s.to_lowercase().chars().collect();
-    }
-    // `flat_map(char::to_lowercase)` is exactly `s.to_lowercase().chars()`
-    // whenever no mapping depends on position; `char::to_lowercase`'s own
-    // buffer keeps a multi-code-point mapping intact.
-    let mut out = Vec::with_capacity(s.len());
-    out.extend(s.chars().flat_map(char::to_lowercase));
-    out
-}
-
-/// Is `needle` a substring of `haystack`, ignoring case?
-///
-/// `needle` must already be case-folded (callers fold the query once per filter
-/// pass, never per cell). Equivalent to
-/// `haystack.to_lowercase().contains(needle)` for every input.
-///
-/// Only ASCII haystacks take the allocation-free route: folding ASCII changes
-/// neither byte count nor alphabet, so a byte window scan is exact, and it beats
-/// the copying path by 1.2-5.8x. Non-ASCII keeps `to_lowercase`, which measured
-/// faster there than any char-at-a-time scan over `str::contains`' search loop,
-/// so there is nothing to win by not copying.
-pub fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if haystack.is_ascii() {
-        // A non-ASCII needle cannot occur in an ASCII haystack.
-        return needle.is_ascii() && ascii_contains(haystack.as_bytes(), needle.as_bytes());
-    }
-    haystack.to_lowercase().contains(needle)
-}
-
-/// Does `haystack` start with `needle`, ignoring case? Equivalent to
-/// `haystack.to_lowercase().starts_with(needle)`.
-pub fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if haystack.is_ascii() {
-        let (h, n) = (haystack.as_bytes(), needle.as_bytes());
-        return needle.is_ascii()
-            && h.len() >= n.len()
-            && h.iter().zip(n).all(|(hc, nc)| hc.eq_ignore_ascii_case(nc));
-    }
-    haystack.to_lowercase().starts_with(needle)
-}
-
-fn ascii_contains(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    if needle.len() == 1 {
-        let n = needle[0];
-        return haystack.iter().any(|hc| hc.eq_ignore_ascii_case(&n));
-    }
-    (0..=haystack.len() - needle.len()).any(|start| {
-        haystack[start..start + needle.len()]
-            .iter()
-            .zip(needle)
-            .all(|(hc, nc)| hc.eq_ignore_ascii_case(nc))
-    })
-}
-
 /// Whether `cell` satisfies `op` against `value`. NULL cells only match the
 /// emptiness operators; numeric cells compare via their sort proxy.
 ///
 /// `value` here is the raw, unfolded filter text. Callers that check many cells
-/// per pass go through [`PreparedFilter`] instead, which folds it once.
+/// per pass go through [`PreparedFilter`] instead, which folds it once and - for
+/// `>` / `<` - decides once per pass whether the operand is a number at all.
 pub fn cell_matches_filter(cell: Option<&ResultCell>, op: FilterOp, value: &str) -> bool {
     let Some(cell) = cell else {
         return false;
@@ -226,15 +143,74 @@ pub struct PreparedFilter {
 
 enum PreparedOp {
     Like(LikePattern),
-    /// Case-insensitive text ops, with the pattern text folded once for the pass.
+    /// Case-insensitive text ops, with the pattern text folded once for the
+    /// pass. A `>` / `<` whose operand is not a number lands here too: the
+    /// fallback branch of `filter_num` returns before it ever reaches its
+    /// comparison closure, so both operators mean "the operand occurs in the
+    /// cell", which is exactly `op: Contains` against the folded operand.
     Folded {
         op: FilterOp,
         needle: String,
+    },
+    /// `>` / `<` with a numeric operand: the operand is parsed once for the
+    /// pass, only the cell's own numeric proxy is read per cell.
+    Number {
+        gt: bool,
+        expected: f64,
     },
     Direct {
         op: FilterOp,
         value: String,
     },
+}
+
+// Thread-local tally of the pass-level operand preparations the `>` / `<`
+// route makes. Test builds only, exactly like `fold.rs`'s `SCRATCH_FOLDS`: the
+// `#[cfg(test)]` line inside each helper below compiles away in the product,
+// so hoisting costs nothing for being observable. (A `//` comment, not a doc
+// comment: doc comments on a macro invocation are a warning, not rustdoc.)
+//
+// Mind what it pins: it counts **calls**, not allocations. The allocation
+// account (`N` folds per pass down to none) is a measurement made on the bench
+// side with its own counting allocator; a call counter is corroborating
+// structure, not the same evidence, and the two must not be quoted as one.
+#[cfg(test)]
+thread_local! {
+    static OPERAND_PREPARATIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Zero the pass-level operand preparation tally. Test builds only.
+#[cfg(test)]
+fn reset_operand_preparations() {
+    OPERAND_PREPARATIONS.with(|cell| cell.set(0));
+}
+
+/// Operand preparations counted since the last reset. Test builds only.
+#[cfg(test)]
+fn operand_preparations() -> u32 {
+    OPERAND_PREPARATIONS.with(|cell| cell.get())
+}
+
+/// Is `operand` a number? `operand.trim().parse::<f64>().ok()`, counted - the
+/// judgement `filter_num` runs at the head of its body, character for
+/// character. That sameness *is* the equivalence argument, so a second
+/// spelling of it (a `trim` on one side, a different error handling on the
+/// other) would silently break the pass-level decision's claim to stand in for
+/// the per-cell one. Overflow is not an error: `"1e400"` parses as `+inf`.
+#[inline(always)]
+fn parse_operand(operand: &str) -> Option<f64> {
+    #[cfg(test)]
+    OPERAND_PREPARATIONS.with(|cell| cell.set(cell.get() + 1));
+    operand.trim().parse::<f64>().ok()
+}
+
+/// `operand.to_lowercase()`, counted: the fold `filter_num`'s fallback branch
+/// used to redo for every cell, one heap allocation among them.
+#[inline(always)]
+fn fold_operand(operand: &str) -> String {
+    #[cfg(test)]
+    OPERAND_PREPARATIONS.with(|cell| cell.set(cell.get() + 1));
+    operand.to_lowercase()
 }
 
 impl PreparedFilter {
@@ -245,6 +221,20 @@ impl PreparedFilter {
                 op: filter.op,
                 needle: filter.value.to_lowercase(),
             },
+            FilterOp::GreaterThan | FilterOp::LessThan => {
+                let gt = filter.op == FilterOp::GreaterThan;
+                match parse_operand(&filter.value) {
+                    Some(expected) => PreparedOp::Number { gt, expected },
+                    None => PreparedOp::Folded {
+                        // The comparison closure of `filter_num` is never
+                        // reached on this branch - it returns first - so `>`
+                        // and `<` are the same predicate here: the operand
+                        // occurs in the cell.
+                        op: FilterOp::Contains,
+                        needle: fold_operand(&filter.value),
+                    },
+                }
+            }
             _ => PreparedOp::Direct {
                 op: filter.op,
                 value: filter.value.clone(),
@@ -259,9 +249,32 @@ impl PreparedFilter {
     pub fn matches(&self, cell: Option<&ResultCell>) -> bool {
         match &self.kind {
             PreparedOp::Direct { op, value } => cell_matches_filter(cell, *op, value),
+            PreparedOp::Number { gt, expected } => match cell {
+                Some(cell) if !cell.is_null => match cell
+                    .sort_value
+                    .or_else(|| cell.value.trim().parse::<f64>().ok())
+                {
+                    Some(actual) => {
+                        if *gt {
+                            actual > *expected
+                        } else {
+                            actual < *expected
+                        }
+                    }
+                    None => false,
+                },
+                // Same NULL rule as `cell_matches_filter`: a value-bearing
+                // operator matches no NULL cell. Dropping this guard turns
+                // `NULL > ""` from false into true, because the folded arm's
+                // `contains_ignore_case` answers an empty needle with `true`
+                // (measured - see the test that pins it).
+                _ => false,
+            },
             PreparedOp::Folded { op, needle } => match cell {
-                // Same NULL rule as `cell_matches_filter`; neither text operator
-                // is an emptiness operator, so a NULL cell never passes.
+                // Same NULL rule as `cell_matches_filter`; none of the operators
+                // routed here - `contains`, `starts with`, and a non-numeric
+                // `>` / `<` alike - is an emptiness operator, so a NULL cell
+                // never passes.
                 Some(cell) if !cell.is_null => match *op {
                     FilterOp::Contains => contains_ignore_case(&cell.value, needle),
                     _ => starts_with_ignore_case(&cell.value, needle),
@@ -778,7 +791,10 @@ mod tests {
     use dbstudio_core::schema::ColumnInfo;
     use gpui::px;
 
-    use super::{ResultsTableDelegate, WIDTH_SAMPLE_ROWS};
+    use super::{
+        operand_preparations, reset_operand_preparations, ColumnFilter, FilterOp, PreparedFilter,
+        ResultsTableDelegate, WIDTH_SAMPLE_ROWS,
+    };
 
     fn delegate() -> ResultsTableDelegate {
         ResultsTableDelegate::new(
@@ -831,11 +847,7 @@ mod tests {
         assert_eq!(found(&d, "missing", 0), None);
         assert_eq!(found(&d, "name", 1), None);
         for col in d.columns.iter() {
-            let first = d
-                .columns
-                .iter()
-                .position(|c| c.name == col.name)
-                .unwrap();
+            let first = d.columns.iter().position(|c| c.name == col.name).unwrap();
             assert_eq!(d.column_ix[&col.name.to_string()], first);
         }
     }
@@ -859,6 +871,70 @@ mod tests {
         d.update(&result(&["v"], vec![vec!["x".repeat(5000)]]));
         assert_eq!(d.columns[1].width, px(3000.0));
     }
+
+    /// What this round changed, pinned as *call counts*: the two things `>` /
+    /// `<` used to redo for every cell from the operand alone - deciding whether
+    /// the operand is a number, and folding it for the fallback - are now
+    /// decided where a pass decides them. Constant per pass, so a bigger page
+    /// must not move the tally. See the counters' doc for why this is not the
+    /// allocation measurement re-run.
+    #[test]
+    fn the_operand_is_prepared_once_per_pass_not_once_per_cell() {
+        let cells: Vec<ResultCell> = (0..1000)
+            .map(|ix| ResultCell::text(format!("row {ix}")))
+            .collect();
+        let filter = |op: FilterOp, value: &str| ColumnFilter {
+            column: 0,
+            op,
+            value: value.to_string(),
+        };
+
+        // The pass shape of `row_matches`: one prepared filter, then one
+        // `matches` per cell. A non-numeric operand pays one judgement plus one
+        // fold for the whole pass, and nothing more per cell.
+        reset_operand_preparations();
+        let loose = PreparedFilter::prepare(&filter(FilterOp::GreaterThan, "2026-01-01"));
+        assert_eq!(
+            operand_preparations(),
+            2,
+            "one parse judgement + one fold, once per pass"
+        );
+        for cell in &cells {
+            assert!(!loose.matches(Some(cell)));
+        }
+        assert_eq!(
+            operand_preparations(),
+            2,
+            "1,000 cells must not add operand work"
+        );
+
+        // A numeric operand pays the judgement alone: it reaches `Number`, whose
+        // per-cell work is the cell's own proxy, not the operand's.
+        reset_operand_preparations();
+        let strict = PreparedFilter::prepare(&filter(FilterOp::LessThan, "12"));
+        assert_eq!(
+            operand_preparations(),
+            1,
+            "the fold is only paid when the parse fails"
+        );
+        for cell in &cells {
+            assert!(!strict.matches(Some(cell)));
+        }
+        assert_eq!(operand_preparations(), 1);
+
+        // And through the real per-pass entry: `set_column_filters` prepares the
+        // filter list once and then answers every row of the page.
+        let rows: Vec<Vec<String>> = (0..500).map(|ix| vec![format!("row {ix}")]).collect();
+        let mut d = delegate();
+        d.update(&result(&["v"], rows));
+        reset_operand_preparations();
+        d.set_column_filters(&[filter(FilterOp::GreaterThan, "2026-01-01")]);
+        assert_eq!(
+            operand_preparations(),
+            2,
+            "a 500-row page is one pass, not 500"
+        );
+        d.set_column_filters(&[]);
+        assert_eq!(operand_preparations(), 2, "clearing prepares nothing");
+    }
 }
-
-

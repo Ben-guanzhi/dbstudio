@@ -409,7 +409,7 @@ impl SslMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionConfig {
     pub id: String,
     pub name: String,
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(SslMode::from_wire("prefer"), SslMode::Require);
         assert_eq!(SslMode::from_wire("verify-identity"), SslMode::VerifyFull);
         assert_eq!(SslMode::from_wire(""), SslMode::Disable);
-        assert!(SslMode::Disable.is_encrypted() == false);
+        assert!(!SslMode::Disable.is_encrypted());
         assert!(SslMode::Require.is_encrypted());
     }
 

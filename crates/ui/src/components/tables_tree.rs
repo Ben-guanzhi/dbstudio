@@ -10,7 +10,9 @@ use gpui_component::{
     tree::{tree, TreeEntry, TreeItem, TreeState},
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
+use std::sync::Arc;
 
+use crate::fold::contains_ignore_case;
 use crate::state::{AppState, ObjectSegment};
 use crate::utils::truncate_str;
 
@@ -40,7 +42,7 @@ pub struct TablesTree {
     search_input: Entity<InputState>,
     selected_item: Option<TreeItem>,
     has_tables: bool,
-    tables: Vec<TableInfo>,
+    tables: Arc<Vec<TableInfo>>,
     search_query: String,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,10 +59,29 @@ impl TablesTree {
 
         let _subscriptions = vec![
             cx.observe_global::<AppState>(move |this, cx| {
-                let tables = cx.global::<AppState>().tables_for(this.window_id).to_vec();
-                this.tables = tables;
-                this.has_tables = !this.tables.is_empty();
-                this.rebuild_items(cx);
+                // This handler fires on every write to `AppState`, most of
+                // which leave the table list alone; rebuilding the tree then
+                // would re-clone and re-format every table for nothing. The
+                // shared handle says "nothing could have moved" in O(1); when
+                // the handle is new the content still decides, so a refresh
+                // that returned the same schema leaves the tree alone.
+                let changed = {
+                    let state = cx.global::<AppState>();
+                    let tables = state.tables_arc_for(this.window_id);
+                    if Arc::ptr_eq(tables, &this.tables) {
+                        false
+                    } else {
+                        let moved = tables.as_slice() != this.tables.as_slice();
+                        this.tables = Arc::clone(tables);
+                        this.has_tables = !this.tables.is_empty();
+                        moved
+                    }
+                };
+                if changed {
+                    this.rebuild_items(cx);
+                } else {
+                    cx.notify();
+                }
             }),
             cx.subscribe_in(
                 &search_input,
@@ -80,7 +101,7 @@ impl TablesTree {
             search_input,
             selected_item: None,
             has_tables: !cx.global::<AppState>().tables_for(window_id).is_empty(),
-            tables: cx.global::<AppState>().tables_for(window_id).to_vec(),
+            tables: Arc::clone(cx.global::<AppState>().tables_arc_for(window_id)),
             search_query: String::new(),
             _subscriptions,
         }
@@ -267,7 +288,7 @@ fn open_object_item(
 fn build_tree_items(tables: &[TableInfo], search: &str) -> Vec<TreeItem> {
     let mut schema_tables: std::collections::BTreeMap<String, Vec<&TableInfo>> = Default::default();
     for t in tables {
-        if !search.is_empty() && !t.name.to_lowercase().contains(search) {
+        if !search.is_empty() && !contains_ignore_case(&t.name, search) {
             continue;
         }
         let key = t.schema.clone().unwrap_or_default();

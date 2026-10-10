@@ -5,15 +5,19 @@ use super::types::QueryHistoryEntry;
 
 pub struct QueryHistoryRepository<'a> {
     pool: &'a Pool<Sqlite>,
+    last_connection_id: Option<String>,
 }
 
 impl<'a> QueryHistoryRepository<'a> {
     pub fn new(pool: &'a Pool<Sqlite>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            last_connection_id: None,
+        }
     }
 
     pub async fn record(
-        &self,
+        &mut self,
         connection_id: &str,
         sql: &str,
         execution_time_ms: u128,
@@ -37,6 +41,7 @@ impl<'a> QueryHistoryRepository<'a> {
 
         // Bound table growth: drop the oldest rows per connection after every
         // insert so the local history cannot grow without limit.
+        self.last_connection_id = Some(connection_id.to_string());
         self.prune(500).await?;
         Ok(())
     }
@@ -84,25 +89,32 @@ impl<'a> QueryHistoryRepository<'a> {
     }
 
     pub async fn prune(&self, keep_per_connection: usize) -> Result<()> {
-        sqlx::query(&format!(
-            "DELETE FROM query_history WHERE id NOT IN (
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (PARTITION BY connection_id ORDER BY executed_at DESC) as rn
-                    FROM query_history
-                ) WHERE rn <= {}
-            )",
-            keep_per_connection
-        ))
-        .execute(self.pool)
-        .await?;
+        // Only prune the connection that just inserted: count its rows, and if
+        // it exceeds the cap, delete the oldest few. This is O(1) per insert
+        // instead of a full-table ROW_NUMBER() window sort on every query.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM query_history WHERE connection_id = ?1")
+                .bind(self.last_connection_id.as_deref().unwrap_or(""))
+                .fetch_one(self.pool)
+                .await?;
+
+        if count > keep_per_connection as i64 {
+            let excess = count - keep_per_connection as i64;
+            sqlx::query(
+                "DELETE FROM query_history WHERE connection_id = ?1 AND id IN (
+                    SELECT id FROM query_history WHERE connection_id = ?1
+                    ORDER BY executed_at ASC LIMIT ?2
+                )",
+            )
+            .bind(self.last_connection_id.as_deref().unwrap_or(""))
+            .bind(excess)
+            .execute(self.pool)
+            .await?;
+        }
         Ok(())
     }
 
-    pub async fn search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<QueryHistoryEntry>> {
+    pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<QueryHistoryEntry>> {
         let pattern = format!("%{}%", query);
         let rows: Vec<HistoryRow> = sqlx::query_as(
             "SELECT id, connection_id, sql, execution_time_ms, row_count, is_error, executed_at

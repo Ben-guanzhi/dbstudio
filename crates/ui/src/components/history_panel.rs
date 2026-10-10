@@ -10,6 +10,7 @@ use gpui_component::{
     StyledExt as _,
 };
 
+use crate::fold::contains_ignore_case;
 use crate::state::AppState;
 use crate::utils::truncate_str;
 use dbstudio_storage::types::QueryHistoryEntry;
@@ -51,9 +52,17 @@ impl HistoryPanel {
 
         let _subscriptions = vec![
             cx.observe_global::<AppState>(move |this, cx| {
+                // GPUI re-runs every `observe_global` handler on *any* mutable
+                // access to `AppState` (a status-bar change notifies here too),
+                // so re-cloning the whole 200-row history per notification is
+                // pure copy traffic unless the content actually moved.
                 let state = cx.global::<AppState>();
-                this.history = state.query_history.clone();
-                this.favorites = state.favorites.clone();
+                if state.query_history != this.history {
+                    this.history = state.query_history.clone();
+                }
+                if state.favorites != this.favorites {
+                    this.favorites = state.favorites.clone();
+                }
                 cx.notify();
             }),
             cx.subscribe_in(
@@ -85,7 +94,7 @@ impl HistoryPanel {
             let query = self.search_text.to_lowercase();
             self.history
                 .iter()
-                .filter(|entry| entry.sql.to_lowercase().contains(&query))
+                .filter(|entry| contains_ignore_case(&entry.sql, &query))
                 .collect()
         }
     }
@@ -98,8 +107,8 @@ impl HistoryPanel {
             self.favorites
                 .iter()
                 .filter(|entry| {
-                    entry.name.to_lowercase().contains(&query)
-                        || entry.sql.to_lowercase().contains(&query)
+                    contains_ignore_case(&entry.name, &query)
+                        || contains_ignore_case(&entry.sql, &query)
                 })
                 .collect()
         }

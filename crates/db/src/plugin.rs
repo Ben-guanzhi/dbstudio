@@ -16,6 +16,15 @@ use crate::tunnel::{SshTunnel, TunnelGuard};
 
 /// Macro to delegate method calls to the underlying connection type.
 /// This eliminates the repetitive match patterns in the Connection enum.
+///
+/// ARCHITECTURAL DEBT (known, accepted): Rust 1.91 does not support
+/// `async fn` in traits as dyn-compatible, so `ConnectionInner` cannot
+/// hold `Arc<dyn SqlDriver>` and dispatch through a trait object. This
+/// macro is the explicit-dispatch fallback: each call site expands to a
+/// 6-arm match, which is Θ(1) jump-table cost but duplicates the dispatch
+/// shape 11 times. When the toolchain gains native async-trait dyn support,
+/// replace this macro with a single `Arc<dyn SqlDriver>` field and delete
+/// the match arms. Do not add new dispatch sites — extend the macro.
 macro_rules! delegate_to_driver {
     ($self:expr, $method:ident $(, $arg:expr)*) => {
         match &$self.inner {
@@ -114,23 +123,31 @@ impl Connection {
     }
 
     pub async fn ping(&self) -> std::result::Result<(), DbError> {
-        delegate_to_driver!(self, ping)
-            .map_err(|e| DbError::from_anyhow(&e))
+        delegate_to_driver!(self, ping).map_err(|e| DbError::from_anyhow(&e))
     }
 
     pub async fn execute(&self, sql: &str) -> std::result::Result<SqlResult, DbError> {
-        delegate_to_driver!(self, execute, sql)
-            .map_err(|e| DbError::from_anyhow(&e))
+        delegate_to_driver!(self, execute, sql).map_err(|e| DbError::from_anyhow(&e))
+    }
+
+    /// Run a SELECT for an export, without the interactive display cap where
+    /// the driver can support it. SQLite streams every row; the other engines
+    /// still come through the capped [`execute`], and export turns their
+    /// `truncated` flag into a `partial` dump rather than a silent lie.
+    pub async fn execute_export(&self, sql: &str) -> std::result::Result<SqlResult, DbError> {
+        let result = match &self.inner {
+            ConnectionInner::Sqlite(c) => c.execute_export(sql).await,
+            _ => delegate_to_driver!(self, execute, sql),
+        };
+        result.map_err(|e| DbError::from_anyhow(&e))
     }
 
     pub async fn current_database(&self) -> std::result::Result<String, DbError> {
-        delegate_to_driver!(self, current_database)
-            .map_err(|e| DbError::from_anyhow(&e))
+        delegate_to_driver!(self, current_database).map_err(|e| DbError::from_anyhow(&e))
     }
 
     pub async fn switch_database(&self, database: &str) -> std::result::Result<(), DbError> {
-        delegate_to_driver!(self, switch_database, database)
-            .map_err(|e| DbError::from_anyhow(&e))
+        delegate_to_driver!(self, switch_database, database).map_err(|e| DbError::from_anyhow(&e))
     }
 }
 
@@ -290,9 +307,7 @@ async fn connect_inner(
     })
 }
 
-pub async fn list_databases(
-    conn: &Connection,
-) -> std::result::Result<Vec<DatabaseInfo>, DbError> {
+pub async fn list_databases(conn: &Connection) -> std::result::Result<Vec<DatabaseInfo>, DbError> {
     delegate_to_driver!(conn, list_databases).map_err(|e| DbError::from_anyhow(&e))
 }
 

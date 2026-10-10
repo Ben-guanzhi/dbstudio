@@ -1,5 +1,5 @@
-use dbstudio_ui::state::Interaction;
 use super::*;
+use dbstudio_ui::state::Interaction;
 impl Workspace {
     pub(super) fn render_workspace(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let ws = cx.global::<AppState>().window_state(self.window_id);

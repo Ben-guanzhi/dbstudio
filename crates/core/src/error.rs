@@ -143,7 +143,10 @@ mod tests {
     #[test]
     fn from_anyhow_promotes_timeout_markers() {
         let err = anyhow::anyhow!("request to server failed: deadline exceeded");
-        assert!(matches!(DbError::from_anyhow(&err), DbError::Timeout { .. }));
+        assert!(matches!(
+            DbError::from_anyhow(&err),
+            DbError::Timeout { .. }
+        ));
     }
 
     #[test]

@@ -257,6 +257,19 @@ pub fn finalize_query_result(
     sql: String,
     elapsed_ms: u128,
 ) -> SqlResult {
+    finalize_query_result_capped(columns, rows, sql, elapsed_ms, Some(MAX_RESULT_ROWS))
+}
+
+/// Same as [`finalize_query_result`], but with the row budget supplied by the
+/// caller. `None` means "keep every row already fetched" — used by export,
+/// which must not inherit the interactive display cap.
+pub fn finalize_query_result_capped(
+    columns: Vec<ColumnInfo>,
+    rows: Vec<Vec<ResultCell>>,
+    sql: String,
+    elapsed_ms: u128,
+    max_rows: Option<usize>,
+) -> SqlResult {
     let mut result = QueryResult {
         columns,
         rows,
@@ -266,7 +279,13 @@ pub fn finalize_query_result(
         sql,
         truncated: false,
     };
-    result.truncate_rows(MAX_RESULT_ROWS);
+    match max_rows {
+        Some(cap) => result.truncate_rows(cap),
+        None => {
+            result.row_count = result.rows.len();
+            result.total_row_count = result.rows.len();
+        }
+    }
     SqlResult::Query(result)
 }
 

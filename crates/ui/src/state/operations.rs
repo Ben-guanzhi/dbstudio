@@ -113,7 +113,7 @@ pub fn disconnect(window_id: u64, cx: &mut App) {
                 s.connection_state = ConnectionStatus::Disconnected;
                 s.active_database = None;
                 s.databases.clear();
-                s.tables.clear();
+                s.tables = Arc::new(Vec::new());
                 s.table_schemas.clear();
                 s.last_result = None;
                 s.is_executing = false;
@@ -266,11 +266,10 @@ pub fn execute_query(sql: String, window_id: u64, cx: &mut App) {
         .unwrap_or_default();
     if requires_confirmation(kind.clone(), env, cx.global::<AppState>().safe_mode) {
         cx.update_global::<AppState, _>(|state, _cx| {
-            state.window_state_mut(window_id).interaction =
-                Interaction::ConfirmQuery {
-                    sql,
-                    kind: kind.unwrap_or(WriteKind::OtherDdl),
-                };
+            state.window_state_mut(window_id).interaction = Interaction::ConfirmQuery {
+                sql,
+                kind: kind.unwrap_or(WriteKind::OtherDdl),
+            };
             state.status_message = "Confirm this query before execution".to_string();
         });
         return;
@@ -487,21 +486,25 @@ fn apply_load_more(state: &mut AppState, session_id: Option<u64>, page: QueryRes
     let Some(s) = state.session_mut(sid) else {
         return 0;
     };
-    let Some(SqlResult::Query(existing)) = s.last_result.as_deref() else {
+    if s.last_result.is_none() {
         return 0;
-    };
-    let mut merged = existing.clone();
+    }
+    // Append the new page in place: Arc::make_mut gives a mutable borrow without
+    // cloning the accumulated rows, so k pages cost Θ(total) not Θ(k²).
     let added = page.rows.len();
-    merged.rows.extend(page.rows);
-    merged.row_count = merged.rows.len();
-    merged.total_row_count = if page.truncated {
-        merged.rows.len().saturating_add(1)
-    } else {
-        merged.rows.len()
-    };
-    merged.truncated = page.truncated;
-    merged.execution_time_ms = page.execution_time_ms;
-    s.last_result = Some(Arc::new(SqlResult::Query(merged)));
+    if let Some(result) = &mut s.last_result {
+        if let SqlResult::Query(existing) = Arc::make_mut(result) {
+            existing.rows.extend(page.rows);
+            existing.row_count = existing.rows.len();
+            existing.total_row_count = if page.truncated {
+                existing.rows.len().saturating_add(1)
+            } else {
+                existing.rows.len()
+            };
+            existing.truncated = page.truncated;
+            existing.execution_time_ms = page.execution_time_ms;
+        }
+    }
     added
 }
 
@@ -646,7 +649,7 @@ pub fn select_database(database: &str, window_id: u64, cx: &mut App) {
             if let Some(sid) = session_id {
                 if let Some(s) = state.session_mut(sid) {
                     s.databases = databases;
-                    s.tables = tables;
+                    s.tables = Arc::new(tables);
                     s.active_database = Some(db);
                 }
             }
@@ -720,7 +723,7 @@ pub fn refresh_tables(window_id: u64, cx: &mut App) {
         cx.update_global::<AppState, _>(|state, _cx| {
             if let Some(sid) = session_id {
                 if let Some(s) = state.session_mut(sid) {
-                    s.tables = tables;
+                    s.tables = Arc::new(tables);
                 }
             }
         });
@@ -1072,7 +1075,7 @@ async fn connect_async(id: u64, info: ConnectionInfo, cx: &mut AsyncApp) {
                     s.environment = info.environment;
                     s.active_database = active_database;
                     s.databases = databases;
-                    s.tables = tables;
+                    s.tables = Arc::new(tables);
                 }
                 state.status_message = format!("Connected to {}", info.name);
             });
@@ -1126,7 +1129,14 @@ fn run_edit(
 
         let sql_for_history = sql.clone();
         cx.update_global::<AppState, _>(|state, _cx| {
-            record_history(state, session_id, &sql_for_history, exec_ms, row_count, is_error);
+            record_history(
+                state,
+                session_id,
+                &sql_for_history,
+                exec_ms,
+                row_count,
+                is_error,
+            );
             if is_error {
                 // Bookkeeping always runs: a failed undo/redo puts its record
                 // back on the right stack regardless of *why* it failed.
@@ -1395,6 +1405,15 @@ pub fn delete_favorite(id: i64, cx: &mut App) {
     .detach();
 }
 
+/// Trailing warning for an export status line when the dump is incomplete.
+fn partial_export_suffix(stats: &dbstudio_db::export::ExportStats) -> &'static str {
+    if stats.partial {
+        " — warning: the result limit was hit, so the dump is missing rows"
+    } else {
+        ""
+    }
+}
+
 /// Export the current database (of the active session in `window_id`) to a SQL dump file.
 pub fn export_database(path: &str, window_id: u64, cx: &mut AsyncApp) {
     let path = path.to_string();
@@ -1416,10 +1435,11 @@ pub fn export_database(path: &str, window_id: u64, cx: &mut AsyncApp) {
             Ok(stats) => {
                 cx.update_global::<AppState, _>(|state, _cx| {
                     state.status_message = format!(
-                        "Exported {} tables ({} rows) to {}",
+                        "Exported {} tables ({} rows) to {}{}",
                         stats.tables_exported,
                         stats.rows_exported,
-                        path.display()
+                        path.display(),
+                        partial_export_suffix(&stats)
                     );
                 });
             }
@@ -1459,10 +1479,11 @@ pub fn export_table(path: &str, table: &str, window_id: u64, cx: &mut AsyncApp) 
             Ok(stats) => {
                 cx.update_global::<AppState, _>(|state, _cx| {
                     state.status_message = format!(
-                        "Exported {} ({} rows) to {}",
+                        "Exported {} ({} rows) to {}{}",
                         table,
                         stats.rows_exported,
-                        path.display()
+                        path.display(),
+                        partial_export_suffix(&stats)
                     );
                 });
             }

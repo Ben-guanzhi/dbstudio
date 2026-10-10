@@ -169,7 +169,7 @@ impl PluginOption {
         for info in dbstudio_db::plugin_manager().list_plugins() {
             options.push(PluginOption {
                 name: info.name.clone(),
-                title: format!("{} v{} 路 {}", info.name, info.version, info.db_type),
+                title: format!("{} v{} · {}", info.name, info.version, info.db_type),
             });
         }
         options

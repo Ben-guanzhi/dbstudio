@@ -63,7 +63,9 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     /// List databases on the server.
     fn list_databases(&self, handle: &str) -> anyhow::Result<String> {
         let _ = handle;
-        Err(anyhow::anyhow!("list_databases not supported by this plugin"))
+        Err(anyhow::anyhow!(
+            "list_databases not supported by this plugin"
+        ))
     }
 
     /// List tables in the current database.
@@ -108,7 +110,9 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     /// Switch to a different database.
     fn switch_database(&self, handle: &str, database: &str) -> anyhow::Result<()> {
         let _ = (handle, database);
-        Err(anyhow::anyhow!("switch_database not supported by this plugin"))
+        Err(anyhow::anyhow!(
+            "switch_database not supported by this plugin"
+        ))
     }
 
     /// Get the name of the currently selected database.

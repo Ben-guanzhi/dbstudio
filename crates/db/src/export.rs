@@ -152,7 +152,12 @@ pub async fn export_database(
         if config.include_data && table.table_type == TableType::Table {
             let select_sql = select_statement(&db_type, &qualified, config.max_rows);
 
-            if let SqlResult::Query(q) = conn.execute(&select_sql).await? {
+            if let SqlResult::Query(q) = conn.execute_export(&select_sql).await? {
+                // The driver caps SELECT results for the interactive grid. If it
+                // did, the dump is missing rows even though the export
+                // "succeeded" — record that so callers can warn instead of
+                // reporting a complete export.
+                stats.partial |= q.truncated;
                 stats.rows_exported += q.rows.len();
                 stats.tables_exported += 1;
 
@@ -200,6 +205,10 @@ pub async fn export_database(
 pub struct ExportStats {
     pub tables_exported: usize,
     pub rows_exported: usize,
+    /// `true` when at least one table was capped by the result-fetch limit, so
+    /// the dump holds fewer rows than the source. Only engines without a
+    /// streaming export path can set this; SQLite exports every row.
+    pub partial: bool,
 }
 
 /// Import a SQL dump file into a database.

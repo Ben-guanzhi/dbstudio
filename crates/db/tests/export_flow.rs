@@ -194,6 +194,63 @@ fn export_schema_only_config() {
     );
 }
 
+// Regression for the round-2 P0: an "unlimited" export (max_rows == 0) reused
+// the display `execute` path, which is capped at MAX_RESULT_ROWS (10,000). The
+// extra rows were dropped silently and the dump still claimed success. This
+// table has 10,001 rows, so it crosses the cap by exactly one.
+const OVER_CAP_ROWS: usize = 10_001;
+
+#[test]
+fn export_unlimited_fetches_every_row_past_the_display_cap() {
+    let source = temp_db_path("over_cap.db");
+    let dump = temp_db_path("over_cap.sql");
+    let _ = std::fs::remove_file(&dump);
+
+    let config = sqlite_config(&source);
+    smol::block_on(async {
+        let conn = dbstudio_db::connect(&config, "", None, None)
+            .await
+            .expect("connect");
+        conn.execute("CREATE TABLE big (id INTEGER PRIMARY KEY, val TEXT NOT NULL)")
+            .await
+            .expect("create");
+        // One recursive-CTE statement: fast, and avoids 10k round-trips.
+        conn.execute(&format!(
+            "INSERT INTO big (id, val) \
+             WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt WHERE x < {OVER_CAP_ROWS}) \
+             SELECT x, 'v' || x FROM cnt"
+        ))
+        .await
+        .expect("seed");
+
+        let export_config = ExportConfig {
+            include_schema: false,
+            include_data: true,
+            include_drop: false,
+            tables: vec!["big".to_string()],
+            max_rows: 0, // "unlimited"
+        };
+        let stats = export_database(&conn, std::path::Path::new(&dump), &export_config, None)
+            .await
+            .expect("export");
+
+        assert_eq!(
+            stats.rows_exported, OVER_CAP_ROWS,
+            "unlimited export must not stop at the 10k display cap"
+        );
+    });
+
+    let dump_content = std::fs::read_to_string(&dump).expect("read dump");
+    let insert_lines = dump_content
+        .lines()
+        .filter(|l| l.starts_with("INSERT INTO "))
+        .count();
+    assert_eq!(
+        insert_lines, OVER_CAP_ROWS,
+        "dump file must contain one INSERT per source row"
+    );
+}
+
 #[test]
 fn export_single_table_subset_excludes_others() {
     let source = temp_db_path("subset.db");

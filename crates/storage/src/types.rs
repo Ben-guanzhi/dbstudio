@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub use dbstudio_core::models::ConnectionConfig as ConnectionInfo;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryHistoryEntry {
     pub id: i64,
     pub connection_id: String,
