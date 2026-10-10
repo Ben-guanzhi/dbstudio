@@ -260,18 +260,18 @@ impl AiPanel {
         if schemas.is_empty() {
             return "No schema loaded for the active connection.".to_string();
         }
-        let mut out = String::new();
+        let mut out = String::with_capacity(schemas.iter().take(10).map(|(_, s)| s.table_name.len() + s.columns.len() * 32 + 16).sum());
         for (_key, s) in schemas.iter().take(10) {
             let columns: Vec<String> = s
                 .columns
                 .iter()
                 .map(|c| format!("{} {}", c.name, c.data_type))
                 .collect();
-            out.push_str(&format!(
-                "TABLE {} ({})\n",
-                s.table_name,
-                columns.join(", ")
-            ));
+            out.push_str("TABLE ");
+            out.push_str(&s.table_name);
+            out.push_str(" (");
+            out.push_str(&columns.join(", "));
+            out.push_str(")\n");
         }
         out
     }

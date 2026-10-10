@@ -91,7 +91,9 @@ pub fn urlencode_credentials(value: &str) -> String {
             }
             _ => {
                 out.push('%');
-                out.push_str(&format!("{:02X}", b));
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
             }
         }
     }

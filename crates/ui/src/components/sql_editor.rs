@@ -381,18 +381,18 @@ impl Editor {
         let full_text = state.value().to_string();
         let cursor = state.selected_range().start.min(full_text.len());
         let schemas = cx.global::<AppState>().table_schemas_for(self.window_id);
-        let mut schema_ctx = String::new();
+        let mut schema_ctx = String::with_capacity(schemas.iter().take(10).map(|(_, s)| s.table_name.len() + s.columns.len() * 32 + 16).sum());
         for (_key, s) in schemas.iter().take(10) {
             let columns: Vec<String> = s
                 .columns
                 .iter()
                 .map(|c| format!("{} {}", c.name, c.data_type))
                 .collect();
-            schema_ctx.push_str(&format!(
-                "TABLE {} ({})\n",
-                s.table_name,
-                columns.join(", ")
-            ));
+            schema_ctx.push_str("TABLE ");
+            schema_ctx.push_str(&s.table_name);
+            schema_ctx.push_str(" (");
+            schema_ctx.push_str(&columns.join(", "));
+            schema_ctx.push_str(")\n");
         }
         let prefix = &full_text[..cursor];
         let user_prompt = format!(
