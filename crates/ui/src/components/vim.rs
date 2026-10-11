@@ -231,6 +231,52 @@ fn move_right_n(text: &str, caret: usize, n: usize) -> usize {
     c
 }
 
+/// PL/SQL Developer 的 Smart AutoIndent 词表（Tools > Preferences > Editor，
+/// 随工具发行 SmartIndent.txt）：光标所在行以这些词开头时，换行给下一行缩进一级。
+pub(crate) const SMART_INDENT_WORDS: [&str; 13] = [
+    "BEGIN",
+    "IF",
+    "THEN",
+    "ELSE",
+    "ELSIF",
+    "PROCEDURE",
+    "FUNCTION",
+    "CASE",
+    "WHEN",
+    "LOOP",
+    "WHILE",
+    "FOR",
+    "EXCEPTION",
+];
+
+/// 一级缩进 = 两个空格。
+pub(crate) const SMART_INDENT_STEP: &str = "  ";
+
+/// 行首第一个词（跳掉前导空白），返回切片引用不分配。以注释或字符串字面量
+/// 开头的行不是语句，返回 `None`。
+fn first_code_word(line: &str) -> Option<&str> {
+    let rest = line.trim_start();
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    let word = &rest[..end];
+    if word.is_empty()
+        || word.starts_with("--")
+        || word.starts_with("/*")
+        || word.starts_with('#')
+        || word.starts_with('\'')
+        || word.starts_with('"')
+        || word.starts_with('`')
+    {
+        return None;
+    }
+    Some(word)
+}
+
+/// 行首词是否命中词表（大小写不敏感、整词匹配：`FORM` 不算 `FOR`）。
+fn smart_indent_line(line: &str) -> bool {
+    first_code_word(line)
+        .is_some_and(|w| SMART_INDENT_WORDS.iter().any(|k| k.eq_ignore_ascii_case(w)))
+}
+
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -432,6 +478,8 @@ impl VimBuf {
                 let leave = key == "escape" || (ctrl && (key == "c" || key == "["));
                 if leave {
                     Some(self.leave_normal())
+                } else if key == "enter" {
+                    self.smart_newline()
                 } else {
                     None
                 }
@@ -1091,6 +1139,30 @@ impl VimBuf {
         let caret = (starts[line] + joined.len()).min(self.text.len());
         self.caret = caret;
         VimStep::replaced(self.text.clone(), caret)
+    }
+
+    /// Smart AutoIndent：光标行以 [`SMART_INDENT_WORDS`] 的词开头时，插入换行并
+    /// 给新行缩进一级，光标落在缩进之后；未命中返回 `None`，交回原生编辑器插入
+    /// 裸换行。语义对齐 PL/SQL Developer 的 Smart AutoIndent 选项。
+    fn smart_newline(&mut self) -> Option<VimStep> {
+        let caret = self.caret.min(self.text.len());
+        let line = line_of(&self.text, caret);
+        let starts = line_starts(&self.text);
+        let (start, end) = if line + 1 < starts.len() {
+            (starts[line], starts[line + 1])
+        } else {
+            (starts[line], self.text.len())
+        };
+        if !smart_indent_line(&self.text[start..end]) {
+            return None;
+        }
+        self.push_snapshot();
+        self.text.insert(caret, '\n');
+        let indent_at = caret + 1;
+        self.text.insert_str(indent_at, SMART_INDENT_STEP);
+        self.reset();
+        self.caret = (indent_at + SMART_INDENT_STEP.len()).min(self.text.len());
+        Some(VimStep::insert_mode(Some(self.text.clone()), self.caret))
     }
 
     fn open_line(&mut self, before: bool) -> VimStep {

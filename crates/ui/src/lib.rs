@@ -1977,6 +1977,56 @@ mod vim_tests {
         let step = v.step("J", false, false, false).unwrap();
         assert_eq!(step.text.as_deref(), Some("select * from t"));
     }
+
+    #[test]
+    fn smart_indent_steps_only_on_trigger_lines() {
+        // 触发词：换行带一级缩进，光标落在缩进之后，且仍在插入模式。
+        let mut v = buf("BEGIN");
+        v.caret = 5;
+        v.mode = VimMode::Insert;
+        let step = v.step("enter", false, false, false).unwrap();
+        assert_eq!(step.text.as_deref(), Some("BEGIN\n  "));
+        assert_eq!(v.caret, 8);
+        assert!(step.to_insert);
+        assert!(matches!(v.mode, VimMode::Insert));
+
+        // 非触发词不接管，交回原生编辑器插裸换行。
+        let mut v = buf("SELECT * FROM t");
+        v.caret = 15;
+        v.mode = VimMode::Insert;
+        assert!(v.step("enter", false, false, false).is_none());
+
+        // 整词匹配；注释与字符串字面量开头的行不算语句。
+        for text in ["FORM", "THENISH", "-- BEGIN", "/* BEGIN", "'BEGIN'"] {
+            let mut v = buf(text);
+            v.caret = text.len();
+            v.mode = VimMode::Insert;
+            assert!(v.step("enter", false, false, false).is_none(), "{text}");
+        }
+
+        // 中间行命中也缩进，其余行原样保留。
+        let mut v = buf("select 1\nwhen x = 1 then\nselect 2");
+        v.caret = 24; // end of the `when` line
+        v.mode = VimMode::Insert;
+        let step = v.step("enter", false, false, false).unwrap();
+        assert_eq!(
+            step.text.as_deref(),
+            Some("select 1\nwhen x = 1 then\n  \nselect 2")
+        );
+    }
+
+    #[test]
+    fn smart_indent_undo_restores_the_buffer() {
+        let mut v = buf("LOOP");
+        v.caret = 4;
+        v.mode = VimMode::Insert;
+        let step = v.step("enter", false, false, false).unwrap();
+        assert_eq!(step.text.as_deref(), Some("LOOP\n  "));
+        v.step("escape", false, false, false).unwrap();
+        assert!(matches!(v.mode, VimMode::Normal));
+        let undone = v.step("u", false, false, false).unwrap();
+        assert_eq!(undone.text.as_deref(), Some("LOOP"));
+    }
 }
 
 #[cfg(test)]
