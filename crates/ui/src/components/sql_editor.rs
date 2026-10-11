@@ -42,6 +42,14 @@ pub struct Editor {
     /// Whether Vim-style key handling is active for the editor.
     vim_on: bool,
     vim: VimBuf,
+    /// The database names last pushed into `db_select`. GPUI notifies every
+    /// `observe_global` handler on *any* mutable `AppState` access, and the
+    /// handler used to rebuild this `Vec<SharedString>` (one clone per
+    /// database) plus call `set_items` on every notification. Caching the
+    /// list lets an unrelated write cost a slice compare instead.
+    db_names: Vec<SharedString>,
+    /// The active database last pushed into `db_select`, compared the same way.
+    db_active: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,14 +103,23 @@ impl Editor {
             cx.observe_global_in::<AppState>(window, move |this, win, cx| {
                 this.sync_editor_buffer(win, cx);
                 let state = cx.global::<AppState>();
-                let names: Vec<SharedString> = state
-                    .databases_for(this.window_id)
-                    .iter()
-                    .map(|d| d.name.clone().into())
-                    .collect();
+                let dbs = state.databases_for(this.window_id);
                 let active_db = state.active_database_for(this.window_id).cloned();
+                // Only touch the SelectState when the list or the selection
+                // actually moved: any AppState write reaches this handler.
+                let changed = dbs.len() != this.db_names.len()
+                    || dbs
+                        .iter()
+                        .zip(this.db_names.iter())
+                        .any(|(d, n)| d.name.as_str() != n.as_ref());
+                if !changed && active_db == this.db_active {
+                    return;
+                }
+                let names: Vec<SharedString> = dbs.iter().map(|d| d.name.clone().into()).collect();
+                this.db_names = names;
+                this.db_active = active_db.clone();
                 this.db_select.update(cx, |select, cx| {
-                    select.set_items(names, win, cx);
+                    select.set_items(this.db_names.clone(), win, cx);
                     if let Some(db) = &active_db {
                         let value = SharedString::from(db.clone());
                         select.set_selected_value(&value, win, cx);
@@ -133,6 +150,8 @@ impl Editor {
             current_session_id: state.window_state(window_id).active_session,
             vim_on,
             vim: VimBuf::default(),
+            db_names: Vec::new(),
+            db_active: None,
             _subscriptions,
         }
     }
@@ -381,7 +400,13 @@ impl Editor {
         let full_text = state.value().to_string();
         let cursor = state.selected_range().start.min(full_text.len());
         let schemas = cx.global::<AppState>().table_schemas_for(self.window_id);
-        let mut schema_ctx = String::with_capacity(schemas.iter().take(10).map(|(_, s)| s.table_name.len() + s.columns.len() * 32 + 16).sum());
+        let mut schema_ctx = String::with_capacity(
+            schemas
+                .iter()
+                .take(10)
+                .map(|(_, s)| s.table_name.len() + s.columns.len() * 32 + 16)
+                .sum(),
+        );
         for (_key, s) in schemas.iter().take(10) {
             let columns: Vec<String> = s
                 .columns
