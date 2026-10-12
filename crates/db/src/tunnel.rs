@@ -152,11 +152,17 @@ impl russh::client::Handler for KnownHostsHandler {
                         Ok(true)
                     }
                     Err(err) => {
-                        tracing::warn!(
-                            "Could not record {} in known_hosts: {err}; accepting anyway",
+                        // Fail closed: the host is unknown and could not be
+                        // recorded, so every retry re-does trust-on-first-use and
+                        // a man-in-the-middle would still be accepted silently.
+                        // A missing known_hosts file does not land here — that
+                        // path returns Ok(false) above and is recorded before
+                        // connecting.
+                        bail!(
+                            "Could not record {} in known_hosts, so its host key \
+                             cannot be trusted: {err}",
                             self.host_desc()
                         );
-                        Ok(true)
                     }
                 }
             }
@@ -168,12 +174,14 @@ impl russh::client::Handler for KnownHostsHandler {
                     self.host_desc()
                 );
             }
+            // A parse or lookup failure means the recorded key could not be
+            // compared, not that it matched — fail closed rather than accept.
             Err(err) => {
-                tracing::warn!(
-                    "Could not verify host key for {}: {err}; accepting anyway",
+                bail!(
+                    "Could not verify the SSH host key for {}: {err}. Fix the \
+                     known_hosts entry, or remove it to accept the key again.",
                     self.host_desc()
                 );
-                Ok(true)
             }
         }
     }
