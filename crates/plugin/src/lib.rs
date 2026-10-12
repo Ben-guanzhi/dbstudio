@@ -13,7 +13,10 @@ pub struct PluginInfo {
 /// Plugin ABI version for compatibility checking.
 ///
 /// v2 adds `DatabasePlugin::current_database` to the trait (vtable change).
-pub const PLUGIN_ABI_VERSION: u32 = 2;
+/// v3 moves the compatibility check in front of construction: plugins must
+/// export the plain `dbstudio_plugin_abi_version` C symbol, which the loader
+/// reads before calling `create_plugin()`.
+pub const PLUGIN_ABI_VERSION: u32 = 3;
 
 /// Trait that database driver plugins must implement.
 ///
@@ -25,6 +28,10 @@ pub const PLUGIN_ABI_VERSION: u32 = 2;
 /// - The plugin must not violate Rust's safety guarantees
 pub unsafe trait DatabasePlugin: Send + Sync {
     /// Get the ABI version this plugin was built against.
+    ///
+    /// Informational only: the loader verifies the version through the
+    /// `dbstudio_plugin_abi_version` C symbol before construction, so this
+    /// method is never what makes the compatibility decision.
     fn abi_version(&self) -> u32;
 
     /// Get plugin metadata.
@@ -132,6 +139,22 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     fn close(&self, handle: &str) -> anyhow::Result<()>;
 }
 
+/// C-ABI entry point reporting the plugin's ABI version. Plugins export it as:
+///
+/// ```text
+/// #[no_mangle]
+/// pub extern "C" fn dbstudio_plugin_abi_version() -> u32 {
+///     dbstudio_plugin::PLUGIN_ABI_VERSION
+/// }
+/// ```
+///
+/// The loader reads the version through this symbol *before* calling
+/// `create_plugin()`. Asking the constructed trait object for `abi_version()`
+/// would dispatch through the plugin's own vtable — the very table that is
+/// mislaid when the versions differ — so that check was undefined behavior
+/// before it could ever fail.
+pub type PluginAbiVersionFn = extern "C" fn() -> u32;
+
 /// Plugin entry point function type.
 ///
 /// The plugin library must export a function with this signature:
@@ -142,4 +165,7 @@ pub unsafe trait DatabasePlugin: Send + Sync {
 ///     // create and return your plugin instance
 /// }
 /// ```
+///
+/// Only called after `dbstudio_plugin_abi_version` has matched, so the vtable
+/// the returned object points at is trusted by then.
 pub type CreatePluginFn = fn() -> Box<dyn DatabasePlugin>;

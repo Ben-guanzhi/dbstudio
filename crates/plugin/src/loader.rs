@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use crate::{DatabasePlugin, PluginInfo, PLUGIN_ABI_VERSION};
+use crate::{DatabasePlugin, PluginAbiVersionFn, PluginInfo, PLUGIN_ABI_VERSION};
 
 /// A loaded plugin with its library handle.
 struct LoadedPlugin {
@@ -81,20 +81,30 @@ impl PluginManager {
             let library = libloading::Library::new(path)
                 .with_context(|| format!("Failed to load library: {}", path.display()))?;
 
+            // Verify the ABI through a plain C symbol *before* constructing
+            // anything. Reading it off the returned trait object dispatches
+            // through the plugin's own vtable — the very table that is mislaid
+            // when the versions differ — so that check was undefined behavior
+            // before it could ever fail.
+            let abi_version: libloading::Symbol<PluginAbiVersionFn> = library
+                .get(b"dbstudio_plugin_abi_version")
+                .with_context(|| {
+                    "Plugin does not export 'dbstudio_plugin_abi_version'; rebuild it against the \
+                     current plugin ABI (v3 checks the version in front of construction)"
+                })?;
+            if abi_version() != PLUGIN_ABI_VERSION {
+                return Err(anyhow::anyhow!(
+                    "Plugin ABI version mismatch: expected {}, got {}",
+                    PLUGIN_ABI_VERSION,
+                    abi_version()
+                ));
+            }
+
             let create_plugin: libloading::Symbol<crate::CreatePluginFn> = library
                 .get(b"create_plugin")
                 .with_context(|| "Plugin does not export 'create_plugin' function")?;
 
             let plugin = create_plugin();
-
-            // Check ABI version
-            if plugin.abi_version() != PLUGIN_ABI_VERSION {
-                return Err(anyhow::anyhow!(
-                    "Plugin ABI version mismatch: expected {}, got {}",
-                    PLUGIN_ABI_VERSION,
-                    plugin.abi_version()
-                ));
-            }
 
             let info = plugin.info();
             let plugin_name = info.name.clone();
