@@ -62,8 +62,11 @@ impl ResultsPanel {
             Some(s) => s.columns.clone(),
             None => return,
         };
-        let query = match self.result.as_deref() {
-            Some(SqlResult::Query(q)) => q.clone(),
+        // Only the header list is needed below (for name -> slot lookups);
+        // cloning the whole QueryResult to get it copied every row of the
+        // grid, up to the 10 000-row cap, on each modal open.
+        let query_columns: Vec<ColumnInfo> = match self.result.as_deref() {
+            Some(SqlResult::Query(q)) => q.columns.clone(),
             _ => return,
         };
         // The selection index is in *display* coordinates (row may be sorted/
@@ -72,8 +75,7 @@ impl ResultsPanel {
         let row_cells: Vec<ResultCell> = {
             let table = self.table.clone();
             let delegate = table.read(cx).delegate();
-            query
-                .columns
+            query_columns
                 .iter()
                 .map(|c| {
                     delegate
@@ -94,7 +96,7 @@ impl ResultsPanel {
                     let mut input = InputState::new(window, cx)
                         .placeholder(&col.data_type)
                         .clean_on_escape();
-                    let col_ix = query.columns.iter().position(|c| c.name == col.name);
+                    let col_ix = query_columns.iter().position(|c| c.name == col.name);
                     let cell = col_ix.and_then(|ix| row_cells.get(ix));
                     match cell {
                         Some(cell) if !cell.is_null => {
@@ -230,8 +232,10 @@ impl ResultsPanel {
                 return;
             }
         };
-        let query = match self.result.as_deref() {
-            Some(SqlResult::Query(q)) => q.clone(),
+        // Header names only: see `open_edit_modal` for why this does not
+        // clone the whole grid.
+        let query_columns: Vec<ColumnInfo> = match self.result.as_deref() {
+            Some(SqlResult::Query(q)) => q.columns.clone(),
             _ => {
                 self.close_insert_modal(cx);
                 return;
@@ -249,8 +253,7 @@ impl ResultsPanel {
         let mut old_vals: Vec<Option<String>> = Vec::new();
         let mut new_vals: Vec<Option<String>> = Vec::new();
         for (col, input) in self.insert_columns.iter().zip(self.insert_inputs.iter()) {
-            let old = query
-                .columns
+            let old = query_columns
                 .iter()
                 .position(|c| c.name == col.name)
                 .and_then(|ix| original_row.get(ix))

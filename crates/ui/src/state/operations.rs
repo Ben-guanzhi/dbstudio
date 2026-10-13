@@ -180,16 +180,19 @@ fn spawn_execution(exec: ExecContext, sql: String, cx: &mut App) {
                     s.is_executing = false;
                 }
             }
-            match &result {
+            match result {
+                // The outcome is only ever *stored*: the session takes
+                // ownership of the grid, so a landed query costs no deep copy
+                // of up to 10 000 rows on its way behind the `Arc`.
                 Ok(result) => {
-                    let (exec_ms, rc, err) = match result {
+                    let (exec_ms, rc, err) = match &result {
                         SqlResult::Query(q) => (q.execution_time_ms, Some(q.row_count), false),
                         SqlResult::Modified(m) => (m.execution_time_ms, None, false),
                         SqlResult::Error(_) => (0, None, true),
                     };
                     if let Some(sid) = session_id {
                         if let Some(s) = state.session_mut(sid) {
-                            s.last_result = Some(Arc::new(result.clone()));
+                            s.last_result = Some(Arc::new(result));
                         }
                     }
                     record_history(state, session_id, &sql_clone, exec_ms, rc, err);
@@ -1118,8 +1121,11 @@ fn run_edit(
             Err(e) => (0, None, true, Some(e.to_string()), e.is_connection_lost()),
         };
         // Convert any failure into a SqlResult the state update can store.
-        let result_snapshot = match &result {
-            Ok(r) => r.clone(),
+        // The awaited `result` is used nowhere else, so the snapshot takes
+        // it by value: a Query outcome lands in the session without ever
+        // deep-copying its grid.
+        let result_snapshot = match result {
+            Ok(r) => r,
             Err(e) => SqlResult::Error(dbstudio_core::result::ErrorResult {
                 message: e.to_string(),
                 sql: sql.clone(),
@@ -1297,8 +1303,11 @@ pub fn apply_edits_sequentially(edits: Vec<guard::PendingWrite>, window_id: u64,
             let label = edit.label.clone();
             // anyhow::Error is not Clone, so the state update works on a
             // SqlResult snapshot (transport errors become SqlResult::Error).
-            let result_snapshot = match &result {
-                Ok(r) => r.clone(),
+            // The result is used nowhere else in this iteration, so the
+            // snapshot moves: a Query outcome reaches the session without a
+            // deep copy of its grid.
+            let result_snapshot = match result {
+                Ok(r) => r,
                 Err(e) => SqlResult::Error(dbstudio_core::result::ErrorResult {
                     message: e.to_string(),
                     sql: sql.clone(),
@@ -1310,7 +1319,7 @@ pub fn apply_edits_sequentially(edits: Vec<guard::PendingWrite>, window_id: u64,
                 record_history(state, session_id, &sql, exec_ms, row_count, is_error);
                 if let Some(sid) = session_id {
                     if let Some(s) = state.session_mut(sid) {
-                        s.last_result = Some(Arc::new(result_snapshot.clone()));
+                        s.last_result = Some(Arc::new(result_snapshot));
                         if failed {
                             // The edit (and the rest) stay pending for retry.
                         } else {

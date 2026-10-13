@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use dbstudio_core::result::CellType;
+use dbstudio_core::result::{CellType, QueryResult, SqlResult};
 
 use crate::fold::{contains_ignore_case, fold_into_chars, starts_with_ignore_case};
 
@@ -351,7 +351,23 @@ pub struct ResultsTableDelegate {
     /// UPDATE touched every column by name, and each one paid for the
     /// whole header list.
     column_ix: HashMap<String, usize>,
-    rows: Vec<Vec<ResultCell>>,
+    /// The shared result handle the grid reads its cells from. The panel
+    /// used to deep-copy up to 10 000 rows × every column into a private
+    /// `Vec<Vec<ResultCell>>` on each result landing (and again per page
+    /// append); the grid is a read-only view of the session's result, so
+    /// it holds the same `Arc` and a landing costs one refcount bump.
+    /// A copy-on-write through the session handle (load-more, rerun)
+    /// mints a new address and the panel pushes it in via `update`, so
+    /// the delegate never sees a mutated grid under its feet - the same
+    /// snapshot semantics the deep copy gave, at none of the cost.
+    source: Option<Arc<SqlResult>>,
+    /// Display slot (0-based over the data columns, i.e. `col_ix - 1` in
+    /// the grid's coordinates) → index into the row as stored in
+    /// `source`. Identity until a column drag reorders it; `move_column`
+    /// used to physically reorder every row for this, Θ(rows × cols)
+    /// memmove per drag on the private copy. Permuting this one `Vec`
+    /// answers exactly the reads the physical reorder produced.
+    data_col: Vec<usize>,
     order: Vec<usize>,
     sort_col: Option<usize>,
     sort_asc: bool,
@@ -378,7 +394,8 @@ impl ResultsTableDelegate {
         Self {
             columns: Vec::new(),
             column_ix: HashMap::new(),
-            rows: Vec::new(),
+            source: None,
+            data_col: Vec::new(),
             order: Vec::new(),
             sort_col: None,
             sort_asc: true,
@@ -394,29 +411,63 @@ impl ResultsTableDelegate {
         }
     }
 
-    pub(super) fn update(&mut self, result: &QueryResult) {
-        self.rows = result.rows.clone();
-        self.order = (0..self.rows.len()).collect();
+    /// The query inside the shared handle; `None` for non-query results and
+    /// for the reset state, both of which render an empty grid.
+    fn query(&self) -> Option<&QueryResult> {
+        match self.source.as_deref() {
+            Some(SqlResult::Query(q)) => Some(q),
+            _ => None,
+        }
+    }
+
+    /// The rows of the shared handle, in storage order (see `data_col`
+    /// for how display slots map into it).
+    fn rows(&self) -> &[Vec<ResultCell>] {
+        match self.query() {
+            Some(q) => q.rows.as_slice(),
+            None => &[],
+        }
+    }
+
+    /// Storage index of display slot `slot`; slots the permutation does not
+    /// cover (out-of-range, or rows longer than the column list) read
+    /// themselves, which is what the physical layout did for them.
+    fn mapped(&self, slot: usize) -> usize {
+        self.data_col.get(slot).copied().unwrap_or(slot)
+    }
+
+    pub(super) fn update(&mut self, source: Option<Arc<SqlResult>>) {
+        self.source = source;
+        self.order = (0..self.rows().len()).collect();
         self.sort_col = None;
         self.sort_asc = true;
         self.modified_cells.clear();
         let mut cols = vec![Column::new("#", "#").width(px(60.0))];
-        cols.extend(result.columns.iter().enumerate().map(|(col_ix, col)| {
-            let header_len = col.name.chars().count().max(1);
-            let cell_len = self
-                .rows
-                .iter()
-                .take(WIDTH_SAMPLE_ROWS)
-                .filter_map(|row| row.get(col_ix))
-                .map(|cell| cell.value.chars().take(MAX_MEASURED_CHARS).count())
-                .max()
-                .unwrap_or(0);
-            let width = (header_len.max(cell_len) as f32 * 7.5 + 24.0).clamp(80.0, 3000.0);
-            Column::new(&col.name, &col.name)
-                .sortable()
-                .width(px(width))
-        }));
+        cols.extend(
+            self.query()
+                .into_iter()
+                .flat_map(|q| q.columns.iter())
+                .enumerate()
+                .map(|(col_ix, col)| {
+                    let header_len = col.name.chars().count().max(1);
+                    let cell_len = self
+                        .rows()
+                        .iter()
+                        .take(WIDTH_SAMPLE_ROWS)
+                        .filter_map(|row| row.get(col_ix))
+                        .map(|cell| cell.value.chars().take(MAX_MEASURED_CHARS).count())
+                        .max()
+                        .unwrap_or(0);
+                    let width = (header_len.max(cell_len) as f32 * 7.5 + 24.0).clamp(80.0, 3000.0);
+                    Column::new(&col.name, &col.name)
+                        .sortable()
+                        .width(px(width))
+                }),
+        );
         self.columns = cols;
+        // A fresh result resets the display order, as replacing the whole
+        // physical row copy used to.
+        self.data_col = (0..self.query().map_or(0, |q| q.columns.len())).collect();
         self.rebuild_column_index();
         self.rebuild_filtered_order();
     }
@@ -469,7 +520,7 @@ impl ResultsTableDelegate {
     }
 
     fn row_matches(&self, row_ix: usize, query: &str, prepared: &[PreparedFilter]) -> bool {
-        let Some(row) = self.rows.get(row_ix) else {
+        let Some(row) = self.rows().get(row_ix) else {
             return false;
         };
         let text_ok = query.is_empty()
@@ -479,22 +530,30 @@ impl ResultsTableDelegate {
         if !text_ok {
             return false;
         }
-        prepared.iter().all(|f| f.matches(row.get(f.column)))
+        // `f.column` indexes the physical display order, as it did when a
+        // column drag physically reordered every row; the permutation says
+        // which stored cell sits at that position now.
+        prepared
+            .iter()
+            .all(|f| f.matches(row.get(self.mapped(f.column))))
     }
 
     fn apply_sort(&mut self) {
-        let mut order: Vec<usize> = (0..self.rows.len()).collect();
+        let mut order: Vec<usize> = (0..self.rows().len()).collect();
         if let Some(col) = self.sort_col {
+            let rows = self.rows();
+            let cell_col = self.mapped(col);
+            let asc = self.sort_asc;
             order.sort_by(|&a, &b| {
-                let ca = self.rows[a].get(col);
-                let cb = self.rows[b].get(col);
+                let ca = rows[a].get(cell_col);
+                let cb = rows[b].get(cell_col);
                 let ord = match (ca, cb) {
                     (Some(a), Some(b)) => a.sort_cmp(b),
                     (Some(_), None) => std::cmp::Ordering::Greater,
                     (None, Some(_)) => std::cmp::Ordering::Less,
                     (None, None) => std::cmp::Ordering::Equal,
                 };
-                if self.sort_asc {
+                if asc {
                     ord
                 } else {
                     ord.reverse()
@@ -521,7 +580,7 @@ impl ResultsTableDelegate {
             return None;
         }
         let row_ix = *self.filtered_order.get(display_row)?;
-        self.rows.get(row_ix)?.get(display_col - 1)
+        self.rows().get(row_ix)?.get(self.mapped(display_col - 1))
     }
 }
 
@@ -685,8 +744,8 @@ impl TableDelegate for ResultsTableDelegate {
             return self.render_edit_input(col_ix, cx);
         }
 
-        if let Some(row) = self.rows.get(row_ix) {
-            if let Some(cell) = row.get(col_ix - 1) {
+        if let Some(row) = self.rows().get(row_ix) {
+            if let Some(cell) = row.get(self.mapped(col_ix - 1)) {
                 let value = if cell.is_null {
                     String::new()
                 } else {
@@ -755,18 +814,7 @@ impl TableDelegate for ResultsTableDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) {
-        let col = self.columns.remove(col_ix);
-        let clamped = to_ix.min(self.columns.len());
-        self.columns.insert(clamped, col);
-        self.rebuild_column_index();
-
-        for row in &mut self.rows {
-            if col_ix < row.len() {
-                let cell = row.remove(col_ix);
-                let insert_at = clamped.min(row.len());
-                row.insert(insert_at, cell);
-            }
-        }
+        self.reorder_column(col_ix, to_ix);
     }
 
     fn visible_rows_changed(
@@ -779,6 +827,27 @@ impl TableDelegate for ResultsTableDelegate {
     }
 }
 
+impl ResultsTableDelegate {
+    /// The column-drag permutation, split from the trait method so it is
+    /// testable without a window. Reorders the display columns and the
+    /// display-slot permutation together; the stored rows never move. The
+    /// old code physically removed/inserted one cell in every row (under
+    /// `col_ix < row.len()`); `mapped` reproduces exactly which stored cell
+    /// each display slot then showed, slot order for slot order.
+    fn reorder_column(&mut self, col_ix: usize, to_ix: usize) {
+        let col = self.columns.remove(col_ix);
+        let clamped = to_ix.min(self.columns.len());
+        self.columns.insert(clamped, col);
+        self.rebuild_column_index();
+
+        if col_ix < self.data_col.len() {
+            let slot = self.data_col.remove(col_ix);
+            let insert_at = clamped.min(self.data_col.len());
+            self.data_col.insert(insert_at, slot);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Explicit imports, not `use super::*`: this module's own glob already
@@ -786,8 +855,9 @@ mod tests {
     // child module sends rustc's resolver over its stack limit on Windows.
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::Arc;
 
-    use dbstudio_core::result::{QueryResult, ResultCell};
+    use dbstudio_core::result::{QueryResult, ResultCell, SqlResult};
     use dbstudio_core::schema::ColumnInfo;
     use gpui::px;
 
@@ -805,7 +875,7 @@ mod tests {
         )
     }
 
-    fn result(columns: &[&str], rows: Vec<Vec<String>>) -> QueryResult {
+    fn grid(columns: &[&str], rows: Vec<Vec<String>>) -> QueryResult {
         QueryResult {
             columns: columns
                 .iter()
@@ -824,13 +894,17 @@ mod tests {
         }
     }
 
+    fn result(columns: &[&str], rows: Vec<Vec<String>>) -> Option<Arc<SqlResult>> {
+        Some(Arc::new(SqlResult::Query(grid(columns, rows))))
+    }
+
     // The name index has to answer exactly what the header scan answered:
     // first of duplicates, nothing for the row-number column, nothing for
     // names the result does not have.
     #[test]
     fn cell_named_resolves_headers_like_the_scan_did() {
         let mut d = delegate();
-        d.update(&result(
+        d.update(result(
             &["id", "name", "id"],
             vec![vec![
                 String::from("1"),
@@ -861,14 +935,14 @@ mod tests {
         // column any more than a row that was never there.
         rows.push(vec!["x".repeat(5000)]);
         let mut d = delegate();
-        d.update(&result(&["v"], rows));
+        d.update(result(&["v"], rows));
         assert_eq!(d.columns[1].width, px(80.0));
 
         // A wide cell inside the sample still reaches the clamp, and a cell
         // of five thousand characters is measured no harder than one of
         // four hundred.
         let mut d = delegate();
-        d.update(&result(&["v"], vec![vec!["x".repeat(5000)]]));
+        d.update(result(&["v"], vec![vec!["x".repeat(5000)]]));
         assert_eq!(d.columns[1].width, px(3000.0));
     }
 
@@ -926,7 +1000,7 @@ mod tests {
         // filter list once and then answers every row of the page.
         let rows: Vec<Vec<String>> = (0..500).map(|ix| vec![format!("row {ix}")]).collect();
         let mut d = delegate();
-        d.update(&result(&["v"], rows));
+        d.update(result(&["v"], rows));
         reset_operand_preparations();
         d.set_column_filters(&[filter(FilterOp::GreaterThan, "2026-01-01")]);
         assert_eq!(
@@ -936,5 +1010,156 @@ mod tests {
         );
         d.set_column_filters(&[]);
         assert_eq!(operand_preparations(), 2, "clearing prepares nothing");
+    }
+
+    /// The share, pinned as a *must-hit*: ingesting a result hands the grid
+    /// the session's own buffer - same `Arc`, same rows `Vec` allocation -
+    /// instead of copying up to 10 000 rows. If `update` regressed to the old
+    /// `result.rows.clone()`, both pointer assertions below go red (that is
+    /// the negative control: a deep copy never aliases the source buffer).
+    #[test]
+    fn ingesting_a_result_shares_the_handle_instead_of_copying_the_grid() {
+        let rows: Vec<Vec<String>> = (0..500)
+            .map(|r| vec![format!("r{r}c0"), format!("r{r}c1")])
+            .collect();
+        let arc = Arc::new(SqlResult::Query(grid(&["a", "b"], rows)));
+        let mut d = delegate();
+        d.update(Some(Arc::clone(&arc)));
+
+        assert!(Arc::ptr_eq(d.source.as_ref().unwrap(), &arc));
+        assert_eq!(Arc::strong_count(&arc), 2, "one handle, two owners");
+        let SqlResult::Query(q) = arc.as_ref() else {
+            unreachable!("the fixture is a Query");
+        };
+        assert!(std::ptr::eq(d.rows().as_ptr(), q.rows.as_ptr()));
+        assert_eq!(d.rows().len(), 500);
+    }
+
+    /// The other half of the equivalence claim: sharing must still *read*
+    /// like the old deep copy did - a snapshot. Mutating the session's
+    /// handle (a load-more append, which copy-on-writes precisely because
+    /// the grid still holds the old one) must not change what the grid
+    /// shows until the panel pushes the new handle in through `update`.
+    #[test]
+    fn the_shared_handle_still_reads_as_a_snapshot() {
+        let rows: Vec<Vec<String>> = (0..50)
+            .map(|r| vec![format!("r{r}c0"), format!("r{r}c1")])
+            .collect();
+        let mut session = Arc::new(SqlResult::Query(grid(&["a", "b"], rows)));
+        let mut d = delegate();
+        d.update(Some(Arc::clone(&session)));
+
+        // The append path: `Arc::make_mut` on a shared handle.
+        if let SqlResult::Query(q) = Arc::make_mut(&mut session) {
+            q.rows
+                .push(vec![ResultCell::text("late"), ResultCell::text("later")]);
+        }
+        assert_eq!(d.rows().len(), 50, "the snapshot was not disturbed");
+
+        d.update(Some(Arc::clone(&session)));
+        assert_eq!(d.rows().len(), 51, "re-ingest sees the appended row");
+        assert_eq!(d.rows()[50][0].value, "late");
+    }
+
+    /// The column drag used to physically remove/insert one cell in every
+    /// row, *at the display index* while display slot `d` reads physical
+    /// `d-1` - a legacy off-by-one that paired a dragged header with the
+    /// neighbour's cells. The permutation must answer, slot for slot, the
+    /// same stored cell the physical reorder left on screen, quirk
+    /// included - and sort over a dragged slot must order rows by that
+    /// same cell.
+    #[test]
+    fn a_column_drag_permutes_instead_of_rewriting_rows() {
+        let rows: Vec<Vec<String>> = (0..5)
+            .map(|r| vec![format!("a{r}"), format!("b{r}"), format!("c{r}")])
+            .collect();
+        let mut d = delegate();
+        d.update(result(&["a", "b", "c"], rows));
+
+        // The old call shape: display index 1 (header "a") moved to 2.
+        // Old effect: headers became ["b","a","c"], while each physical
+        // row went [a,b,c] -> [a,c,b]; display slot 1 now shows physical 0
+        // under header "a" at position 2... recomputed slot by slot, the
+        // name -> value pairs the old grid displayed were:
+        d.reorder_column(1, 2);
+        assert_eq!(d.cell_named(3, "a").map(|c| c.value.as_str()), Some("c3"));
+        assert_eq!(d.cell_named(3, "b").map(|c| c.value.as_str()), Some("a3"));
+        assert_eq!(d.cell_named(3, "c").map(|c| c.value.as_str()), Some("b3"));
+
+        // Sorting display slot 2 (which after the drag shows the stored
+        // `b` cells) must order rows by the b-values, as the physically
+        // reordered copy did.
+        d.sort_col = Some(2);
+        d.sort_asc = true;
+        d.apply_sort();
+        let by_b: Vec<String> = d
+            .filtered_order
+            .iter()
+            .map(|&ix| d.rows()[ix][1].value.clone())
+            .collect();
+        assert_eq!(by_b, vec!["b0", "b1", "b2", "b3", "b4"]);
+    }
+
+    /// Times the copies the run-query path used to make against the shared
+    /// ingest that replaced them. `#[ignore]`d: prints numbers, asserts
+    /// nothing. Same-process, interleaved rounds, per-path medians.
+    #[test]
+    #[ignore = "bench: grid-copy timings"]
+    fn bench_grid_copy_paths() {
+        use std::time::Instant;
+        const ROWS: usize = 10_000;
+        const COLS: usize = 15;
+        let q = QueryResult {
+            columns: (0..COLS)
+                .map(|ix| ColumnInfo::new(format!("c{ix}"), "text", ix as u32))
+                .collect(),
+            rows: (0..ROWS)
+                .map(|r| {
+                    (0..COLS)
+                        .map(|c| ResultCell::text(format!("v{r}-{c}")))
+                        .collect()
+                })
+                .collect(),
+            row_count: ROWS,
+            total_row_count: ROWS,
+            execution_time_ms: 0,
+            sql: String::new(),
+            truncated: false,
+        };
+        let sqlr = Arc::new(SqlResult::Query(q.clone()));
+        let mut t_result_clone = Vec::new();
+        let mut t_rows_clone = Vec::new();
+        let mut t_update = Vec::new();
+        for _ in 0..7 {
+            // What the old path cost per fresh query: one SqlResult clone in
+            // `spawn_execution`, one QueryResult clone in the panel observer
+            // (≈ the `rows.clone` measured here plus headers), one rows clone
+            // in `delegate.update`.
+            let t = Instant::now();
+            let a = SqlResult::clone(&sqlr);
+            t_result_clone.push(t.elapsed());
+            std::hint::black_box(&a);
+            let t = Instant::now();
+            let c = q.rows.clone();
+            t_rows_clone.push(t.elapsed());
+            std::hint::black_box(&c);
+            // The new path: hand the same handle to the delegate.
+            let mut d = delegate();
+            let t = Instant::now();
+            d.update(Some(Arc::clone(&sqlr)));
+            t_update.push(t.elapsed());
+        }
+        let med = |mut v: Vec<std::time::Duration>| {
+            v.sort();
+            v[v.len() / 2]
+        };
+        let m_result_clone = med(t_result_clone);
+        let m_rows_clone = med(t_rows_clone);
+        let old = m_result_clone + m_rows_clone * 2;
+        let new = med(t_update);
+        println!(
+            "bench: result.clone={:?} rows.clone={:?} old-per-run(sum)={:?} new.update={:?}",
+            m_result_clone, m_rows_clone, old, new,
+        );
     }
 }

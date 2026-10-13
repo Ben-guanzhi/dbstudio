@@ -4,9 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dbstudio_core::result::{
-    CellType, ErrorResult, ExecResult, QueryResult, ResultCell, SqlResult,
-};
+use dbstudio_core::result::{CellType, ErrorResult, ExecResult, ResultCell, SqlResult};
 use dbstudio_core::schema::{ColumnInfo, TableSchema};
 use dbstudio_db::utils::quote_string_literal;
 use gpui::prelude::FluentBuilder as _;
@@ -302,11 +300,14 @@ impl ResultsPanel {
                             this.more_pages = query.truncated;
                         }
 
-                        let query = query.clone();
+                        // The delegate reads the session's own grid through
+                        // the shared handle; landing a result costs a
+                        // refcount bump, not a copy of up to 10 000 rows.
+                        let source = this.result.clone();
                         let filter_text = this.filter_text.clone();
                         let column_filters = this.column_filters.clone();
                         this.table.update(cx, |table, cx| {
-                            table.delegate_mut().update(&query);
+                            table.delegate_mut().update(source);
                             table.delegate_mut().set_filter(&filter_text);
                             table.delegate_mut().set_column_filters(&column_filters);
                             table.refresh(cx);
@@ -326,7 +327,9 @@ impl ResultsPanel {
                             this.more_pages = false;
                         }
                         this.table.update(cx, |table, cx| {
-                            table.delegate_mut().update(&QueryResult::empty(""));
+                            // The non-query result (or its absence) resets the
+                            // grid: the delegate reads it as an empty snapshot.
+                            table.delegate_mut().update(this.result.clone());
                             table.delegate_mut().clear_filters();
                             table.refresh(cx);
                         });
@@ -624,7 +627,7 @@ impl ResultsPanel {
             }
         });
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().update(&QueryResult::empty(""));
+            table.delegate_mut().update(None);
             table.delegate_mut().clear_filters();
             table.delegate_mut().set_filter("");
             table.refresh(cx);
