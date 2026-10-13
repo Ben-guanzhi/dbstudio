@@ -171,16 +171,34 @@ impl DatabaseType {
     /// Expression coercing an already-quoted column to text for `LIKE`/`LOWER`.
     ///
     /// The arms are exhaustive on purpose. `TEXT` is what this app has always
-    /// sent for PostgreSQL, SQLite, MSSQL and Oracle; Oracle in particular has
-    /// no `TEXT` type, but that spelling is preserved here rather than silently
-    /// changed, because it has not been verified against a live server.
+    /// sent for SQLite, MSSQL and PostgreSQL. The Oracle arm was verified
+    /// against a live 12.2 EE server: `CAST(x AS TEXT)` fails there with
+    /// ORA-00902 (invalid datatype) on every statement, while `TO_CHAR`
+    /// accepts VARCHAR2/NVARCHAR2/NCHAR/NUMBER/DATE/TIMESTAMP and CLOB.
     pub fn text_cast_expr(&self, quoted: &str) -> String {
         match self {
             DatabaseType::MySQL => format!("CAST({quoted} AS CHAR)"),
+            DatabaseType::Oracle => format!("TO_CHAR({quoted})"),
             DatabaseType::SQLite
             | DatabaseType::PostgreSQL
-            | DatabaseType::MSSQL
-            | DatabaseType::Oracle => format!("CAST({quoted} AS TEXT)"),
+            | DatabaseType::MSSQL => format!("CAST({quoted} AS TEXT)"),
+        }
+    }
+
+    /// Wrap an arbitrary query as an aliased derived table.
+    ///
+    /// Oracle rejects both `AS` for table aliases (ORA-00933) and unquoted
+    /// identifiers starting with `_` (ORA-00911), verified on a live 12.2 EE
+    /// server, so the wrapper omits `AS` there. Pass an `alias` that is valid
+    /// unquoted in every engine (letter-initial) and dialect-specific keyword
+    /// handling stays inside this one method.
+    pub fn wrap_derived_table(&self, inner: &str, alias: &str) -> String {
+        match self {
+            DatabaseType::Oracle => format!("SELECT * FROM ( {inner} ) {alias}"),
+            DatabaseType::SQLite
+            | DatabaseType::MySQL
+            | DatabaseType::PostgreSQL
+            | DatabaseType::MSSQL => format!("SELECT * FROM ( {inner} ) AS {alias}"),
         }
     }
 
@@ -676,6 +694,20 @@ mod tests {
         assert_eq!(
             DatabaseType::PostgreSQL.text_cast_expr("\"c\""),
             "CAST(\"c\" AS TEXT)"
+        );
+        assert_eq!(
+            DatabaseType::Oracle.text_cast_expr("\"c\""),
+            "TO_CHAR(\"c\")"
+        );
+        // Oracle takes no AS for derived tables (ORA-00933); everyone else has
+        // always sent it and accepts it.
+        assert_eq!(
+            DatabaseType::Oracle.wrap_derived_table("SELECT 1 FROM dual", "dbstudio_sub"),
+            "SELECT * FROM ( SELECT 1 FROM dual ) dbstudio_sub"
+        );
+        assert_eq!(
+            DatabaseType::MSSQL.wrap_derived_table("SELECT 1", "dbstudio_sub"),
+            "SELECT * FROM ( SELECT 1 ) AS dbstudio_sub"
         );
     }
 

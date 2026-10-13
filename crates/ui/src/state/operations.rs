@@ -864,7 +864,7 @@ pub fn quote_ident_for(db_type: DatabaseType, name: &str) -> String {
 /// one window at a time.
 pub fn paginate_query(sql: &str, limit: usize, offset: usize, db_type: DatabaseType) -> String {
     let inner = sql.trim().trim_end_matches(';').trim();
-    let wrapped = format!("SELECT * FROM ( {inner} ) AS _dbstudio_sub");
+    let wrapped = db_type.wrap_derived_table(inner, "dbstudio_sub");
     db_type.page_clause(&wrapped, limit, offset)
 }
 
@@ -903,7 +903,8 @@ pub fn build_result_page_sql(
             })
             .collect();
         format!(
-            "SELECT * FROM ( {trimmed} ) AS _dbstudio_filter WHERE {}",
+            "{} WHERE {}",
+            db_type.wrap_derived_table(trimmed, "dbstudio_filter"),
             conds.join(" OR ")
         )
     };

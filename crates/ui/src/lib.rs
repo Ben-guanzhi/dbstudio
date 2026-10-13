@@ -1553,7 +1553,7 @@ mod pagination_tests {
         ] {
             assert_eq!(
                 paginate_query("SELECT * FROM t ORDER BY id", 100, 200, db),
-                "SELECT * FROM ( SELECT * FROM t ORDER BY id ) AS _dbstudio_sub LIMIT 100 OFFSET 200"
+                "SELECT * FROM ( SELECT * FROM t ORDER BY id ) AS dbstudio_sub LIMIT 100 OFFSET 200"
             );
         }
     }
@@ -1562,7 +1562,7 @@ mod pagination_tests {
     fn trailing_semicolons_are_stripped() {
         assert_eq!(
             paginate_query("SELECT * FROM t;  ", 10, 0, DatabaseType::SQLite),
-            "SELECT * FROM ( SELECT * FROM t ) AS _dbstudio_sub LIMIT 10 OFFSET 0"
+            "SELECT * FROM ( SELECT * FROM t ) AS dbstudio_sub LIMIT 10 OFFSET 0"
         );
     }
 
@@ -1570,7 +1570,7 @@ mod pagination_tests {
     fn mssql_uses_offset_fetch() {
         assert_eq!(
             paginate_query("SELECT * FROM t", 100, 200, DatabaseType::MSSQL),
-            "SELECT * FROM ( SELECT * FROM t ) AS _dbstudio_sub ORDER BY (SELECT NULL) OFFSET 200 ROWS FETCH NEXT 100 ROWS ONLY"
+            "SELECT * FROM ( SELECT * FROM t ) AS dbstudio_sub ORDER BY (SELECT NULL) OFFSET 200 ROWS FETCH NEXT 100 ROWS ONLY"
         );
     }
 
@@ -1578,7 +1578,7 @@ mod pagination_tests {
     fn oracle_uses_offset_fetch() {
         assert_eq!(
             paginate_query("SELECT * FROM t", 100, 200, DatabaseType::Oracle),
-            "SELECT * FROM ( SELECT * FROM t ) AS _dbstudio_sub OFFSET 200 ROWS FETCH NEXT 100 ROWS ONLY"
+            "SELECT * FROM ( SELECT * FROM t ) dbstudio_sub OFFSET 200 ROWS FETCH NEXT 100 ROWS ONLY"
         );
     }
 }
