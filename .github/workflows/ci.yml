@@ -26,7 +26,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # This is the one job that fails on Linux while passing on Windows, so it
+      # reports its own error lines. Without it the run only says "Process
+      # completed with exit code 101", which is unreadable without a login.
+      - run: sh "$GITHUB_WORKSPACE/.github/scripts/gate.sh" cargo test --workspace
 
   clippy:
     name: Clippy
