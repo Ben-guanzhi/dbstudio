@@ -28,20 +28,18 @@ unsafe extern "C" fn count_free(ptr: PluginString) {
 }
 
 unsafe extern "C" fn test_info(error: *mut PluginString) -> PluginString {
-    ship_json(
-        &PluginInfo {
-            name: "test-driver".into(),
-            version: "0.4.0".into(),
-            description: "in-process test plugin".into(),
-            author: "test".into(),
-            db_type: "testdb".into(),
-        },
-        error,
-    )
+    let info = PluginInfo {
+        name: "test-driver".into(),
+        version: "0.4.0".into(),
+        description: "in-process test plugin".into(),
+        author: "test".into(),
+        db_type: "testdb".into(),
+    };
+    unsafe { ship_json(&info, error) }
 }
 
 unsafe extern "C" fn test_can_handle(db_type: *const c_char) -> u32 {
-    if read_foreign(db_type) == "testdb" {
+    if unsafe { read_foreign(db_type) } == "testdb" {
         1
     } else {
         0
@@ -53,8 +51,8 @@ unsafe extern "C" fn test_connect(
     password: *const c_char,
     _error: *mut PluginString,
 ) -> PluginString {
-    assert!(read_foreign(config_json).contains("\"database\""));
-    assert_eq!(read_foreign(password), "pw");
+    assert!(unsafe { read_foreign(config_json) }.contains("\"database\""));
+    assert_eq!(unsafe { read_foreign(password) }, "pw");
     ship_string("handle-42".into())
 }
 
@@ -63,24 +61,24 @@ unsafe extern "C" fn test_execute(
     sql: *const c_char,
     error: *mut PluginString,
 ) -> PluginString {
-    assert_eq!(read_foreign(handle), "handle-42");
-    if read_foreign(sql) == "boom" {
-        return fail(error, "executed a bad query");
+    assert_eq!(unsafe { read_foreign(handle) }, "handle-42");
+    if unsafe { read_foreign(sql) } == "boom" {
+        return unsafe { fail(error, "executed a bad query") };
     }
-    ship_string(format!("executed: {}", read_foreign(sql)))
+    ship_string(format!("executed: {}", unsafe { read_foreign(sql) }))
 }
 
 unsafe extern "C" fn test_ping(handle: *const c_char, error: *mut PluginString) -> u32 {
-    if read_foreign(handle) == "handle-42" {
+    if unsafe { read_foreign(handle) } == "handle-42" {
         0
     } else {
-        let _ = fail(error, "unknown handle");
+        let _ = unsafe { fail(error, "unknown handle") };
         1
     }
 }
 
 unsafe extern "C" fn test_close(handle: *const c_char, _error: *mut PluginString) -> u32 {
-    if read_foreign(handle) == "handle-42" {
+    if unsafe { read_foreign(handle) } == "handle-42" {
         0
     } else {
         1
@@ -92,10 +90,10 @@ unsafe extern "C" fn test_switch(
     database: *const c_char,
     error: *mut PluginString,
 ) -> u32 {
-    if read_foreign(database) == "other" {
+    if unsafe { read_foreign(database) } == "other" {
         0
     } else {
-        let _ = fail(error, "no such database");
+        let _ = unsafe { fail(error, "no such database") };
         1
     }
 }
@@ -332,7 +330,7 @@ fn validate_table_rejects_missing_mandatory_slots() {
 fn ship_and_read_roundtrip() {
     let ptr = ship_string("sqlite://data.db".into());
     assert!(!ptr.is_null());
-    let text = read_foreign(ptr.cast());
+    let text = unsafe { read_foreign(ptr.cast()) };
     assert_eq!(text, "sqlite://data.db");
     unsafe { free_foreign(ptr) };
 }
@@ -340,7 +338,7 @@ fn ship_and_read_roundtrip() {
 #[test]
 fn ship_string_never_panics_on_an_embedded_nul() {
     let ptr = ship_string(String::from("a\0b"));
-    let text = read_foreign(ptr.cast());
+    let text = unsafe { read_foreign(ptr.cast()) };
     // A C reader stops at the first NUL, so only the prefix is reachable.
     assert_eq!(text, "a");
     unsafe { free_foreign(ptr) };
@@ -351,27 +349,25 @@ fn fail_fills_the_outparam_and_returns_null() {
     // The plugin writes into storage the host owns, so the host has to give it
     // an address, not just a pointer.
     let mut slot = null_foreign();
-    let result = fail(addr_of_mut!(slot), "disk full");
+    let result = unsafe { fail(addr_of_mut!(slot), "disk full") };
     assert!(result.is_null());
     assert!(!slot.is_null());
-    assert_eq!(read_foreign(slot.cast()), "disk full");
+    assert_eq!(unsafe { read_foreign(slot.cast()) }, "disk full");
     unsafe { free_foreign(slot) };
 }
 
 #[test]
 fn ship_json_encodes_structs() {
     let mut slot = null_foreign();
-    let ptr = ship_json(
-        &PluginInfo {
-            name: "n".into(),
-            version: "1".into(),
-            description: "d".into(),
-            author: "a".into(),
-            db_type: "t".into(),
-        },
-        addr_of_mut!(slot),
-    );
-    let text = read_foreign(ptr.cast());
+    let info = PluginInfo {
+        name: "n".into(),
+        version: "1".into(),
+        description: "d".into(),
+        author: "a".into(),
+        db_type: "t".into(),
+    };
+    let ptr = unsafe { ship_json(&info, addr_of_mut!(slot)) };
+    let text = unsafe { read_foreign(ptr.cast()) };
     assert!(
         text.contains("\"db_type\":\"t\""),
         "unexpected JSON: {text}"
@@ -385,7 +381,7 @@ fn ship_json_encodes_structs() {
 
 #[test]
 fn read_foreign_treats_null_as_empty() {
-    assert_eq!(read_foreign(null_foreign().cast()), "");
+    assert_eq!(unsafe { read_foreign(null_foreign().cast()) }, "");
 }
 
 #[test]

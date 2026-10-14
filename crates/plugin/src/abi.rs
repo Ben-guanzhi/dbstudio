@@ -79,7 +79,12 @@ pub fn ship_string(value: String) -> PluginString {
 ///
 /// Panics never cross an `extern "C"` frame — Rust aborts the process — so this
 /// degrades to a failure instead of risking that.
-pub fn ship_json<T: serde::Serialize>(value: &T, error: *mut PluginString) -> PluginString {
+///
+/// # Safety
+///
+/// `error` must be null or point to a writable `PluginString` slot the caller
+/// owns; it is forwarded to `fail`, which writes through it.
+pub unsafe fn ship_json<T: serde::Serialize>(value: &T, error: *mut PluginString) -> PluginString {
     match serde_json::to_string(value) {
         Ok(json) => ship_string(json),
         Err(e) => fail(error, e.to_string()),
@@ -88,9 +93,14 @@ pub fn ship_json<T: serde::Serialize>(value: &T, error: *mut PluginString) -> Pl
 
 /// Plugin-side: report a failure. Fills `error` and returns the null sentinel
 /// that every slot uses to mean "the call did not succeed".
-pub fn fail(error: *mut PluginString, message: impl Into<String>) -> PluginString {
+///
+/// # Safety
+///
+/// `error` must be null or point to a writable `PluginString` slot the caller
+/// owns. Any other target makes the write undefined behaviour.
+pub unsafe fn fail(error: *mut PluginString, message: impl Into<String>) -> PluginString {
     if !error.is_null() {
-        unsafe { *error = ship_string(message.into()) };
+        *error = ship_string(message.into());
     }
     null_foreign()
 }
@@ -109,15 +119,16 @@ pub unsafe extern "C" fn free_foreign(ptr: PluginString) {
 
 /// Plugin-side: read a host-provided string. Null or invalid UTF-8 becomes the
 /// empty string rather than a fault — the host sends empty for absent values.
-pub fn read_foreign<'a>(ptr: *const c_char) -> std::borrow::Cow<'a, str> {
+///
+/// # Safety
+///
+/// `ptr` must be null or point to a valid NUL-terminated string. Only the bytes
+/// up to the first NUL are read, so an embedded NUL yields the prefix.
+pub unsafe fn read_foreign<'a>(ptr: *const c_char) -> std::borrow::Cow<'a, str> {
     if ptr.is_null() {
         std::borrow::Cow::Borrowed("")
     } else {
-        std::borrow::Cow::Owned(
-            unsafe { CStr::from_ptr(ptr) }
-                .to_string_lossy()
-                .into_owned(),
-        )
+        std::borrow::Cow::Owned(CStr::from_ptr(ptr).to_string_lossy().into_owned())
     }
 }
 

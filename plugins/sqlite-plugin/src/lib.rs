@@ -58,7 +58,6 @@ fn new_handle() -> String {
 /// else goes through `execute`, which reports rows affected.
 fn is_query(sql: &str) -> bool {
     let head = sql
-        .trim_start()
         .split_whitespace()
         .next()
         .unwrap_or_default()
@@ -376,9 +375,9 @@ fn ship<T: serde::Serialize>(
     error: *mut PluginString,
 ) -> PluginString {
     match catch_unwind(AssertUnwindSafe(body)) {
-        Ok(Ok(value)) => ship_json(&value, error),
-        Ok(Err(e)) => fail(error, e.to_string()),
-        Err(_) => fail(error, "plugin panicked".to_string()),
+        Ok(Ok(value)) => unsafe { ship_json(&value, error) },
+        Ok(Err(e)) => unsafe { fail(error, e.to_string()) },
+        Err(_) => unsafe { fail(error, "plugin panicked".to_string()) },
     }
 }
 
@@ -394,8 +393,8 @@ fn ship_raw(
 ) -> PluginString {
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(value)) => ship_string(value),
-        Ok(Err(e)) => fail(error, e.to_string()),
-        Err(_) => fail(error, "plugin panicked".to_string()),
+        Ok(Err(e)) => unsafe { fail(error, e.to_string()) },
+        Err(_) => unsafe { fail(error, "plugin panicked".to_string()) },
     }
 }
 
@@ -403,18 +402,18 @@ fn status(body: impl FnOnce() -> anyhow::Result<()>, error: *mut PluginString) -
     match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(())) => 0,
         Ok(Err(e)) => {
-            fail(error, e.to_string());
+            unsafe { fail(error, e.to_string()) };
             1
         }
         Err(_) => {
-            fail(error, "plugin panicked".to_string());
+            unsafe { fail(error, "plugin panicked".to_string()) };
             1
         }
     }
 }
 
 fn read(ptr: *const c_char) -> String {
-    read_foreign(ptr).into_owned()
+    unsafe { read_foreign(ptr) }.into_owned()
 }
 
 unsafe extern "C" fn slot_info(error: *mut PluginString) -> PluginString {
