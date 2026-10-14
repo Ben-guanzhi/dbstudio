@@ -284,16 +284,12 @@ fn has_direct_child(node: tree_sitter::Node, kind: &str) -> bool {
 /// statements (SELECT/WITH/...) are additionally scanned for write keywords
 /// anywhere in the text.
 fn classify_sql_lexical(sql: &str) -> Option<WriteKind> {
-    let stripped = strip_comments_and_literals(sql);
+    let stripped = dbstudio_core::sql_mutations::strip_sql_comments_and_literals(sql);
     let trimmed = stripped.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let tokens: Vec<String> = trimmed
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_uppercase())
-        .collect();
+    let tokens = dbstudio_core::sql_mutations::tokenize_sql(trimmed);
     let first_keyword = tokens.first().map(String::as_str).unwrap_or("");
 
     match first_keyword {
@@ -319,7 +315,7 @@ fn classify_sql_lexical(sql: &str) -> Option<WriteKind> {
         "ALTER" => Some(WriteKind::Alter),
         "CREATE" => Some(WriteKind::Create),
         _ => {
-            if is_ddl_keyword(first_keyword) {
+            if dbstudio_core::sql_mutations::SCHEMA_KEYWORDS.contains(&first_keyword) {
                 Some(WriteKind::OtherDdl)
             } else {
                 // Unknown leading token (parenthesized statement, CALL, ...):
@@ -332,18 +328,17 @@ fn classify_sql_lexical(sql: &str) -> Option<WriteKind> {
 }
 
 /// Write keywords that disqualify a statement from the read-only class when
-/// they appear anywhere in the token stream.
-const WRITE_KEYWORDS: &[&str] = &[
-    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "TRUNCATE", "GRANT", "REVOKE", "CREATE",
-    "ALTER", "DROP", "COMMENT", "VACUUM", "REINDEX", "ANALYZE", "CALL", "EXEC", "EXECUTE",
-];
-
+/// they appear anywhere in the token stream. The sets live in `dbstudio-core`
+/// so the UI gate and the MCP `execute` gate read from one source — a keyword
+/// added on one side now reaches the other automatically.
 fn scan_write_keywords(tokens: &[String]) -> Option<&str> {
     for (i, token) in tokens.iter().enumerate() {
         if token == "UPDATE" && i > 0 && tokens[i - 1] == "FOR" {
             continue;
         }
-        if WRITE_KEYWORDS.contains(&token.as_str()) {
+        if dbstudio_core::sql_mutations::DATA_KEYWORDS.contains(&token.as_str())
+            || dbstudio_core::sql_mutations::SCHEMA_KEYWORDS.contains(&token.as_str())
+        {
             return Some(token.as_str());
         }
     }
@@ -368,70 +363,6 @@ fn write_kind_for(keyword: &str) -> WriteKind {
 
 fn has_where(tokens: &[String]) -> bool {
     tokens.iter().any(|t| t == "WHERE")
-}
-
-/// Replaces `--`/`/* */` comments and `'…'`/`"…"`/`` `…` ``/`[…]` literals with
-/// spaces so keyword scans see only the statement's structure.
-fn strip_comments_and_literals(sql: &str) -> String {
-    let chars: Vec<char> = sql.chars().collect();
-    let mut out = String::with_capacity(sql.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\'' | '"' | '`' | '[' => {
-                i = skip_quoted(&chars, i, c);
-                out.push(' ');
-            }
-            '-' if chars.get(i + 1) == Some(&'-') => {
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-                out.push(' ');
-            }
-            '/' if chars.get(i + 1) == Some(&'*') => {
-                let rest: String = chars[i + 2..].iter().collect();
-                match rest.find("*/") {
-                    Some(end) => i += 2 + end + 2,
-                    None => i = chars.len(),
-                }
-                out.push(' ');
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
-/// Skips a quoted literal starting at `chars[start]`, handling doubled quotes,
-/// MySQL backslash escapes, and `]`-terminated bracket identifiers.
-fn skip_quoted(chars: &[char], start: usize, quote: char) -> usize {
-    let mut i = start + 1;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' if quote == '\'' => i += 2,
-            c if c == quote && quote == '[' => return i + 1,
-            c if c == quote => {
-                if chars.get(i + 1) == Some(&quote) {
-                    i += 2;
-                } else {
-                    return i + 1;
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    chars.len()
-}
-
-fn is_ddl_keyword(word: &str) -> bool {
-    matches!(
-        word,
-        "RENAME" | "GRANT" | "REVOKE" | "COMMENT" | "VACUUM" | "REINDEX" | "ANALYZE"
-    )
 }
 
 /// Returns true when the SQL should be confirmed before execution given the

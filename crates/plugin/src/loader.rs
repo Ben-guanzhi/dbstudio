@@ -5,7 +5,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tracing::{info, warn};
 
-use crate::{DatabasePlugin, PluginAbiVersionFn, PluginInfo, PLUGIN_ABI_VERSION};
+use crate::{
+    abi::PluginTable, bridge::PluginBridge, DatabasePlugin, PluginAbiVersionFn, PluginEntryFn,
+    PluginInfo, PLUGIN_ABI_VERSION,
+};
 
 /// A loaded plugin with its library handle.
 struct LoadedPlugin {
@@ -81,16 +84,16 @@ impl PluginManager {
             let library = libloading::Library::new(path)
                 .with_context(|| format!("Failed to load library: {}", path.display()))?;
 
-            // Verify the ABI through a plain C symbol *before* constructing
-            // anything. Reading it off the returned trait object dispatches
-            // through the plugin's own vtable — the very table that is mislaid
-            // when the versions differ — so that check was undefined behavior
-            // before it could ever fail.
+            // Probe the version through a plain `fn() -> u32` before touching
+            // any layout. Reading it off a constructed trait object would
+            // dispatch through the plugin's own vtable — the very thing that is
+            // mislaid when the versions differ — so that check was undefined
+            // behaviour before it could ever fail.
             let abi_version: libloading::Symbol<PluginAbiVersionFn> = library
                 .get(b"dbstudio_plugin_abi_version")
                 .with_context(|| {
                     "Plugin does not export 'dbstudio_plugin_abi_version'; rebuild it against the \
-                     current plugin ABI (v3 checks the version in front of construction)"
+                     current plugin ABI (v4 reads a C function table)"
                 })?;
             if abi_version() != PLUGIN_ABI_VERSION {
                 return Err(anyhow::anyhow!(
@@ -100,18 +103,23 @@ impl PluginManager {
                 ));
             }
 
-            let create_plugin: libloading::Symbol<crate::CreatePluginFn> = library
-                .get(b"create_plugin")
-                .with_context(|| "Plugin does not export 'create_plugin' function")?;
+            let entry: libloading::Symbol<PluginEntryFn> = library
+                .get(b"dbstudio_plugin_entry")
+                .with_context(|| "Plugin does not export 'dbstudio_plugin_entry' function")?;
 
-            let plugin = create_plugin();
+            let table = validate_table(entry())?;
+
+            // The table is read by value here: `PluginTable` holds only
+            // function pointers, and the library handle is kept alive by
+            // `LoadedPlugin`, so they stay valid for the plugin's lifetime.
+            let plugin: Arc<dyn DatabasePlugin> = Arc::new(PluginBridge { table });
 
             let info = plugin.info();
             let plugin_name = info.name.clone();
 
             let loaded = LoadedPlugin {
                 _library: library,
-                plugin: Arc::from(plugin),
+                plugin,
             };
 
             self.plugins.insert(plugin_name, loaded);
@@ -150,6 +158,26 @@ impl Default for PluginManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Read and validate a table pointer returned by a plugin's entry function.
+///
+/// Split out from `load_plugin` so the checks that protect against a broken
+/// plugin module can be exercised without `libloading`.
+pub(crate) fn validate_table(table_ptr: *const PluginTable) -> Result<PluginTable> {
+    if table_ptr.is_null() {
+        return Err(anyhow::anyhow!(
+            "Plugin entry returned a null table pointer"
+        ));
+    }
+    let table = unsafe { *table_ptr };
+    if table.free_string as usize == 0 || table.info as usize == 0 || table.can_handle as usize == 0
+    {
+        return Err(anyhow::anyhow!(
+            "Plugin table is missing mandatory slots (free_string, info, can_handle)"
+        ));
+    }
+    Ok(table)
 }
 
 /// Check if a file path looks like a plugin library.

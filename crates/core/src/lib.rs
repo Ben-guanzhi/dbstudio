@@ -3,6 +3,7 @@ pub mod error;
 pub mod models;
 pub mod result;
 pub mod schema;
+pub mod sql_mutations;
 
 /// Product name shown in the UI, window titles and logs.
 pub const APP_NAME: &str = "dbstudio";

@@ -64,13 +64,17 @@ cargo run -p dbstudio
 ```
 crates/
 ├── core      # 共享模型：ConnectionConfig、DatabaseType、SqlResult、schema 类型
-├── db        # 数据库驱动层：各数据库连接实现 + SSH 隧道
+├── plugin    # 驱动插件 ABI：DatabasePlugin trait、ABI 版本、动态库加载器
+├── db        # 数据库驱动层：各数据库连接实现 + SSH 隧道 + 插件分派
 ├── storage   # 本地持久化：连接配置、查询历史（内置 SQLite，WAL 模式）
 ├── ui        # GPUI 组件：SQL 编辑器、表树、结果面板、连接表单等
-└── app       # 可执行入口：窗口、主题、工作区装配
+├── app       # 可执行入口：窗口、主题、工作区装配
+└── mcp       # 独立可执行：MCP server（stdio JSON-RPC）
 ```
 
-依赖方向：`app → ui → db → core`，`ui → storage → core`。
+依赖方向：`app → ui / db / storage → core`，`ui → db / storage`，`db → plugin → core`，
+`storage → core`，`mcp → db → core`。`plugin` 刻意不依赖 `db`（`db` 反向依赖它），
+这让插件能作为 cdylib 独立编译。
 
 ## 架构说明
 
@@ -97,14 +101,15 @@ SSH 转发实现于 `crates/db/src/tunnel.rs`（基于 [`russh`](https://crates.
 
 | 运行时 | 使用范围 |
 |---|---|
-| **smol**（async-std 生态） | 应用主体：GPUI 事件循环、`dbstudio-storage`、`dbstudio-ui`、sqlx 的 MySQL/PostgreSQL/SQLite 连接 |
-| **tokio**（专用后台线程上的独立 runtime） | 仅限要求 tokio 上下文的驱动：SSH 隧道（russh）、SQL Server（tiberius）、Oracle |
+| **smol**（async-std 生态） | 应用主体：GPUI 事件循环、`dbstudio-storage`、`dbstudio-ui`、sqlx 的 MySQL/PostgreSQL 连接，以及 SQLite（rusqlite）与 Oracle——后两者是同步库，走 `smol::unblock` 进阻塞线程池 |
+| **tokio**（专用后台线程上的独立 runtime） | 仅限要求 tokio 上下文的驱动：SSH 隧道（russh）、SQL Server（tiberius） |
 
 两个运行时之间唯一的交接点在 `crates/db/src/tunnel.rs`：smol 侧 `await` 一个由
 专用 tokio runtime 完成的 oneshot channel（接收方只需 Waker，不占用 smol 工作线程），
 之后转发任务完全运行在 tokio runtime 线程上。修改代码时请遵守该边界——不要在 smol
 执行器上阻塞等待 tokio 任务（`blocking_recv` 曾把整条 smol 工作线程钉死在整个认证期，
 现已改为 `await`；反之亦然），也不要把 tokio runtime 泄漏到 `db` crate 之外。
+`dbstudio-mcp` 是独立进程，在自己的地址空间里自建 tokio runtime，不受此边界约束。
 
 ### 数据兼容与命名空间迁移
 
@@ -133,9 +138,11 @@ SSH 转发实现于 `crates/db/src/tunnel.rs`（基于 [`russh`](https://crates.
 cargo test --workspace
 ```
 
-集成测试位于 `crates/db/tests/`：`sqlite_flow.rs`（SQLite 连接流程）与
-`tunnel_config.rs`（SSH 配置校验、端点解析、隧道失败路径）。
+集成测试位于 `crates/db/tests/`：`sqlite_flow.rs`（SQLite 连接流程）、
+`tunnel_config.rs`（SSH 配置校验、端点解析、隧道失败路径）与
+`export_flow.rs`（CSV / JSON 导出往返）。
+`plugins/sqlite-plugin/` 是 cdylib 参考插件，通过 `cargo test --workspace` 一并构建。
 
 ## 许可证
 
-暂未指定。
+[MIT License](LICENSE)

@@ -1,4 +1,10 @@
+pub mod abi;
+pub mod bridge;
 pub mod loader;
+
+#[cfg(test)]
+#[path = "loader_tests.rs"]
+mod tests;
 
 /// Plugin metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -12,17 +18,21 @@ pub struct PluginInfo {
 
 /// Plugin ABI version for compatibility checking.
 ///
-/// v2 adds `DatabasePlugin::current_database` to the trait (vtable change).
-/// v3 moves the compatibility check in front of construction: plugins must
-/// export the plain `dbstudio_plugin_abi_version` C symbol, which the loader
-/// reads before calling `create_plugin()`.
-pub const PLUGIN_ABI_VERSION: u32 = 3;
+/// - v2 added `DatabasePlugin::current_database` to the trait (vtable change).
+/// - v3 moved the compatibility check in front of construction: plugins must
+///   export the plain `dbstudio_plugin_abi_version` C symbol, which the loader
+///   reads before calling anything else.
+/// - v4 replaced the `extern "Rust"` boundary with a C ABI function table.
+///   See [`abi::PluginTable`] for why the old `create_plugin() -> Box<dyn
+///   DatabasePlugin>` boundary was undefined behaviour rather than merely
+///   unstable.
+pub const PLUGIN_ABI_VERSION: u32 = 4;
 
 /// Trait that database driver plugins must implement.
 ///
 /// # Safety
 ///
-/// The implementor must ensure that the plugin遵守 the ABI contract:
+/// The implementor must ensure that the plugin honours the ABI contract:
 /// - `abi_version()` must return `PLUGIN_ABI_VERSION`
 /// - All function pointers must be valid for the plugin's lifetime
 /// - The plugin must not violate Rust's safety guarantees
@@ -139,33 +149,30 @@ pub unsafe trait DatabasePlugin: Send + Sync {
     fn close(&self, handle: &str) -> anyhow::Result<()>;
 }
 
-/// C-ABI entry point reporting the plugin's ABI version. Plugins export it as:
+/// C symbol reporting the plugin's ABI version. Plugins export it as:
 ///
 /// ```text
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// pub extern "C" fn dbstudio_plugin_abi_version() -> u32 {
 ///     dbstudio_plugin::PLUGIN_ABI_VERSION
 /// }
 /// ```
 ///
-/// The loader reads the version through this symbol *before* calling
-/// `create_plugin()`. Asking the constructed trait object for `abi_version()`
-/// would dispatch through the plugin's own vtable — the very table that is
-/// mislaid when the versions differ — so that check was undefined behavior
-/// before it could ever fail.
+/// The loader reads the version through this symbol before doing anything
+/// else. A plain `fn() -> u32` needs no layout agreement with the plugin at
+/// all, so the check cannot itself misread a mismatched table.
 pub type PluginAbiVersionFn = extern "C" fn() -> u32;
 
-/// Plugin entry point function type.
-///
-/// The plugin library must export a function with this signature:
+/// Entry point for a plugin library. It must export exactly this:
 ///
 /// ```text
-/// #[no_mangle]
-/// pub extern "Rust" fn create_plugin() -> Box<dyn DatabasePlugin> {
-///     // create and return your plugin instance
+/// #[unsafe(no_mangle)]
+/// pub extern "C" fn dbstudio_plugin_entry() -> *const PluginTable {
+///     std::ptr::addr_of!(TABLE)
 /// }
 /// ```
 ///
-/// Only called after `dbstudio_plugin_abi_version` has matched, so the vtable
-/// the returned object points at is trusted by then.
-pub type CreatePluginFn = fn() -> Box<dyn DatabasePlugin>;
+/// Called only after `dbstudio_plugin_abi_version` has matched, so the table
+/// layout is trusted by then. The table itself carries the callbacks; see
+/// [`abi::PluginTable`] for the wire contract.
+pub type PluginEntryFn = extern "C" fn() -> *const abi::PluginTable;

@@ -1,0 +1,20 @@
+[package]
+name = "dbstudio-plugin-sqlite"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+description = "Reference dbstudio driver plugin: a rusqlite engine exported over the C ABI"
+publish = false
+
+[lib]
+# A cdylib is what the loader dlopens. Not `lib`, so the crate never tries to
+# build a staticlib that would drag a second copy of libsqlite3.a into the host.
+crate-type = ["cdylib"]
+
+[dependencies]
+dbstudio-core = { path = "../../crates/core" }
+dbstudio-plugin = { path = "../../crates/plugin" }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

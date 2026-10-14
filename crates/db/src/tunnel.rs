@@ -15,8 +15,9 @@
 //!
 //! # Runtime note
 //!
-//! `russh` (and the `tiberius`/`oracle` drivers) are tokio-based while the rest
-//! of the app runs on smol. Tunnels therefore execute on a dedicated tokio
+//! `russh` and the `tiberius` driver are tokio-based while the rest of the app
+//! runs on smol (`oracle` is a sync crate called through `smol::unblock`, not
+//! tokio). Tunnels therefore execute on a dedicated tokio
 //! runtime owned by a background thread (see [`TOKIO_RUNTIME`]); the smol side
 //! only waits on a one-shot channel for the listener to come up. Forwarding
 //! tasks are detached and live for the lifetime of the process — one tunnel is

@@ -8,7 +8,13 @@ members = [
     "crates/app",
     "crates/mcp",
     "crates/plugin",
+    "plugins/sqlite-plugin",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
 
 [workspace.dependencies]
 # GPUI ecosystem

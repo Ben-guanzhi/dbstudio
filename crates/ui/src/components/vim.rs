@@ -564,13 +564,17 @@ impl VimBuf {
                 let anchor = self.visual_anchor?;
                 self.visual_anchor = Some(self.caret);
                 self.caret = anchor;
-                let (lo, hi) = self.selection_range().unwrap();
+                let (lo, hi) = self
+                    .selection_range()
+                    .expect("visual_anchor just set, selection must exist");
                 Some(VimStep::selection(self.caret, (lo, hi)))
             }
             _ => {
                 let _step = self.step_motion(key, &mut cur);
                 self.caret = cur;
-                let (lo, hi) = self.selection_range().unwrap();
+                let (lo, hi) = self
+                    .selection_range()
+                    .expect("visual mode guarantees a selection");
                 Some(VimStep::selection(self.caret, (lo, hi)))
             }
         }
@@ -816,7 +820,7 @@ impl VimBuf {
             "escape" => return Some(VimStep::moved(self.caret)),
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => {
                 self.count =
-                    self.count * 10 + (key.chars().next().unwrap() as usize - '0' as usize);
+                    self.count * 10 + (key.chars().next().unwrap_or('0') as usize - '0' as usize);
                 return Some(VimStep::moved(self.caret));
             }
             _ => {}
@@ -913,14 +917,18 @@ impl VimBuf {
                 self.count = 0;
                 self.mode = VimMode::VisualChar;
                 self.visual_anchor = Some(self.caret);
-                let (lo, hi) = self.selection_range().unwrap();
+                let (lo, hi) = self
+                    .selection_range()
+                    .expect("visual_anchor just set, selection must exist");
                 Some(VimStep::selection(self.caret, (lo, hi)))
             }
             "V" => {
                 self.count = 0;
                 self.mode = VimMode::VisualLine;
                 self.visual_anchor = Some(line_starts(&self.text)[line_of(&self.text, self.caret)]);
-                let (lo, hi) = self.selection_range().unwrap();
+                let (lo, hi) = self
+                    .selection_range()
+                    .expect("visual_anchor just set, selection must exist");
                 Some(VimStep::selection(self.caret, (lo, hi)))
             }
             "r" => {

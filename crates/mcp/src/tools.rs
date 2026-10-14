@@ -122,11 +122,12 @@ pub fn list_tools() -> Vec<Tool> {
         },
         Tool {
             name: "execute".into(),
-            description: "Execute a SQL query and return results.".into(),
+            description: "Execute a SQL query and return results. Write operations are blocked in safe mode (default).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "sql": { "type": "string" }
+                    "sql": { "type": "string" },
+                    "safe_mode": { "type": "boolean", "description": "When true (default), write statements (INSERT/UPDATE/DELETE/DDL) are rejected. Set false to allow them." }
                 },
                 "required": ["sql"]
             }),
@@ -342,6 +343,17 @@ async fn handle_execute(state: &McpState, args: &serde_json::Value) -> CallToolR
         Some(s) => s,
         None => return CallToolResult::error("Missing required parameter: sql".into()),
     };
+    let safe_mode = args
+        .get("safe_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    if safe_mode && is_write_statement(sql) {
+        return CallToolResult::error(format!(
+            "Write operation blocked by safe mode: the batch contains {}. Pass safe_mode=false to allow.",
+            mutation_reason(sql),
+        ));
+    }
 
     let conn = match get_connection(state).await {
         Ok(c) => c,
@@ -351,6 +363,43 @@ async fn handle_execute(state: &McpState, args: &serde_json::Value) -> CallToolR
         Ok(result) => CallToolResult::success(format_result(&result)),
         Err(e) => CallToolResult::error(format!("Failed: {}", e)),
     }
+}
+
+/// Decides whether the SQL mutates rows or schema.
+///
+/// Reuses the shared classifier in `dbstudio-core` so the MCP and the UI's
+/// safe-mode gate cannot disagree on the keyword sets — the whole point of the
+/// gate is that one caller loosening cannot silently make the other unsafe.
+/// Two deliberate differences from the UI gate:
+///
+/// - No tree-sitter. The UI parses the syntax tree so it can tell a scoped
+///   `UPDATE` from an unscoped one in its confirmation wording; the MCP only
+///   needs a yes/no, and the lexical classifier already covers the bypasses
+///   that mattered here — `-- comment` prefixes, `SELECT 1; DROP TABLE x`,
+///   data-modifying CTEs, `'DROP'` literals, and `SELECT … FOR UPDATE`.
+/// - `MutationKind::Unknown` is also blocked. The classifier cannot tell
+///   `USE mydb` from a dialect-specific write, and the MCP's caller is an LLM,
+///   so the conservative call is to ask for an explicit `safe_mode=false`.
+fn is_write_statement(sql: &str) -> bool {
+    matches!(
+        dbstudio_core::sql_mutations::classify_sql_mutations(sql),
+        Some(dbstudio_core::sql_mutations::MutationKind::Data)
+            | Some(dbstudio_core::sql_mutations::MutationKind::Schema)
+            | Some(dbstudio_core::sql_mutations::MutationKind::Unknown)
+    )
+}
+
+/// Names the write keywords that tripped the gate, so the LLM caller can tell
+/// *why* it was refused and which statement in a batch to fix. Returns a noun
+/// phrase: `"DROP, INSERT"` or `"an unrecognised statement"`.
+fn mutation_reason(sql: &str) -> String {
+    let keywords = dbstudio_core::sql_mutations::mutation_keywords_in(sql);
+    if keywords.is_empty() {
+        return "an unrecognised statement".to_string();
+    }
+    let mut sorted: Vec<_> = keywords.into_iter().collect();
+    sorted.sort_unstable();
+    sorted.join(", ")
 }
 
 async fn handle_switch_database(state: &McpState, args: &serde_json::Value) -> CallToolResult {
@@ -413,3 +462,7 @@ fn format_result(result: &SqlResult) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tests;
