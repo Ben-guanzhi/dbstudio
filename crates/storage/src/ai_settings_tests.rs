@@ -32,8 +32,33 @@ async fn test_pool(tag: &str) -> Pool<Sqlite> {
     pool
 }
 
+/// True only if the OS keyring really stores and returns a password.
+///
+/// Headless CI runners have no secret service, and there the keyring backend
+/// can accept `set_password` while `get_password` still comes back empty, which
+/// would fail this test on unrelated infrastructure. Probe a throwaway id so the
+/// test skips where the backend is a no-op and runs where it works.
+fn keyring_round_trips() -> bool {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, "ai:apikey:probe").unwrap_or_else(|_| {
+        keyring::Entry::new_with_target("ai:apikey:probe", KEYRING_SERVICE, "")
+            .expect("Failed to create keyring entry")
+    });
+    let sentinel = "dbstudio-keyring-probe";
+    let ok = entry
+        .set_password(sentinel)
+        .and_then(|_| entry.get_password())
+        .map(|stored| stored == sentinel)
+        .unwrap_or(false);
+    let _ = entry.delete_credential();
+    ok
+}
+
 #[test]
 fn ai_config_keyring_round_trip() {
+    if !keyring_round_trips() {
+        eprintln!("skipping: no working OS keyring on this host (no secret service)");
+        return;
+    }
     // Single test on purpose: the OS keyring is process-global, so the
     // set/verify/clear steps must not race with another test's keyring use.
     async_std::task::block_on(async {
