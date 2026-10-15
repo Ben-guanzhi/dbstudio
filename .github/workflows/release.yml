@@ -11,13 +11,13 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
           - target: x86_64-apple-darwin
             os: macos-14
           - target: x86_64-pc-windows-msvc
@@ -60,7 +60,7 @@ jobs:
 
   sign-and-release:
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
