@@ -48,12 +48,15 @@ fn keyring_round_trips() -> bool {
 
 #[test]
 fn ai_config_keyring_round_trip() {
+    // The OS keyring is process-global, so the probe and the write/verify/clear
+    // steps must not race with another test's keyring use.
+    let _keyring = crate::keyring();
+
     if !keyring_round_trips() {
         eprintln!("skipping: no working OS keyring on this host (no secret service)");
         return;
     }
-    // Single test on purpose: the OS keyring is process-global, so the
-    // set/verify/clear steps must not race with another test's keyring use.
+
     async_std::task::block_on(async {
         let pool = test_pool("cfg").await;
 

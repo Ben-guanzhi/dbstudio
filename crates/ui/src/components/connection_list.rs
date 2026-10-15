@@ -8,6 +8,7 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt as _, PopupMenuItem},
     v_flex, ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
 
@@ -212,8 +213,10 @@ impl ConnectionList {
             )
         };
         let info = info.clone();
-        let info_for_edit = info.clone();
         let env = info.environment;
+        let entity = cx.entity().clone();
+        let id = info.id.clone();
+        let copy = info.clone();
 
         h_flex()
             .id(("conn", ix))
@@ -260,12 +263,20 @@ impl ConnectionList {
                     ),
             )
             .on_click(cx.listener(move |this, _, window, cx| this.on_select(&info, window, cx)))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    this.open_tag_edit(&info_for_edit.id, window, cx);
-                }),
-            )
+            .context_menu(move |menu, _window, _menu_cx| {
+                menu.item(PopupMenuItem::new("Edit Tags…").on_click({
+                    let entity = entity.clone();
+                    let id = id.clone();
+                    move |_event, window, cx| {
+                        entity.update(cx, |this, cx| this.open_tag_edit(&id, window, cx));
+                    }
+                }))
+                .separator()
+                .item(PopupMenuItem::new("Copy Deep Link").on_click({
+                    let copy = copy.clone();
+                    move |_event, _window, cx| copy_deep_link(copy.clone(), cx)
+                }))
+            })
     }
 
     fn render_edit_item(
@@ -430,4 +441,43 @@ impl Render for ConnectionList {
 
         items
     }
+}
+
+/// 复制一个已保存连接的深链：`dbstudio://connect?id=<id>&nonce=<nonce>`。
+///
+/// 链接里只有连接 id 与 nonce，凭据不经过剪贴板。nonce 与密码同存在 keyring
+/// 里，所以要走一次存储层才能取到；老版本保存的连接会在这一刻惰性生成一个。
+pub fn copy_deep_link(info: ConnectionInfo, cx: &mut App) {
+    let id = info.id.clone();
+    let name = info.name.clone();
+    cx.spawn(async move |cx| {
+        let store = match dbstudio_storage::AppStore::singleton().await {
+            Ok(store) => store,
+            Err(e) => {
+                status(cx, format!("Copy deep link failed: {e}"));
+                return;
+            }
+        };
+
+        let nonce = match store.connections().ensure_link_nonce(&id) {
+            Ok(nonce) => nonce,
+            Err(e) => {
+                status(cx, format!("Copy deep link for {name} failed: {e}"));
+                return;
+            }
+        };
+
+        let url = crate::url_scheme::build_url(&id, &nonce);
+        cx.update(|app| {
+            app.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+        });
+        status(cx, format!("Deep link copied for {name}: {url}"));
+    })
+    .detach();
+}
+
+fn status(cx: &mut AsyncApp, message: String) {
+    cx.update_global::<AppState, _>(|state, _cx| {
+        state.status_message = message;
+    });
 }

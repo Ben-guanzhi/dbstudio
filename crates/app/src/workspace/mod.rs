@@ -580,84 +580,67 @@ impl Workspace {
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
         let entity = cx.new(|cx| Self::new(window, cx));
 
-        // Check for URL scheme argument
+        // 深链：URL 只带连接 id 与 nonce，凭据不经过命令行参数。
         if let Some(url_str) = dbstudio_ui::url_scheme::find_url_in_args() {
             if let Some(url) = dbstudio_ui::url_scheme::DbStudioUrl::parse(&url_str) {
                 if url.is_connect() {
-                    entity.update(cx, |workspace, cx| {
-                        workspace.handle_url_connect(url, cx);
-                    });
+                    let deep_link = entity.clone();
+                    cx.spawn(async move |cx| {
+                        let info = match load_deep_link(&url.connection_id, &url.nonce).await {
+                            Ok(info) => info,
+                            Err(message) => {
+                                cx.update_global::<AppState, _>(|state, _cx| {
+                                    state.status_message = message;
+                                });
+                                return;
+                            }
+                        };
+                        deep_link.update(cx, |workspace, cx| {
+                            connect(&info, workspace.window_id, cx);
+                        });
+                    })
+                    .detach();
                 }
             }
         }
 
         entity
     }
+}
 
-    fn handle_url_connect(
-        &mut self,
-        url: dbstudio_ui::url_scheme::DbStudioUrl,
-        cx: &mut Context<Self>,
-    ) {
-        use dbstudio_core::models::{ConnectionConfig, DatabaseType};
+/// 取出深链指向的连接并校验 nonce。
+///
+/// 深链不携带任何凭据：连接信息从本地 SQLite 按 id 取回，密码由 `connect`
+/// 内部从 keyring 取。nonce 与密码同存在 keyring 里，连接被删除时一并清除，
+/// 所以删除连接即吊销它的所有深链；保存连接时（含老版本保存的连接被首次
+/// 唤起时）会惰性生成一个。
+async fn load_deep_link(connection_id: &str, nonce: &str) -> Result<ConnectionInfo, String> {
+    let store = dbstudio_storage::AppStore::singleton()
+        .await
+        .map_err(|e| e.to_string())?;
 
-        let db_type = match url.db_type() {
-            Some("sqlite") => DatabaseType::SQLite,
-            Some("mysql") => DatabaseType::MySQL,
-            Some("postgresql") => DatabaseType::PostgreSQL,
-            Some("mssql") => DatabaseType::MSSQL,
-            Some("oracle") => DatabaseType::Oracle,
-            _ => return,
-        };
-
-        let _password = url.password().unwrap_or("").to_string();
-
-        let mut config = ConnectionConfig::new(
-            db_type,
-            format!("{} Connection", url.db_type().unwrap_or("Unknown")),
-        );
-
-        if let Some(host) = url.host() {
-            config.host = host.to_string();
+    let info = match store.connections().load_by_id(connection_id).await {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            return Err(format!(
+                "Deep link rejected: unknown connection {connection_id}"
+            ))
         }
-        if let Some(port) = url.port() {
-            config.port = port;
-        }
-        if let Some(database) = url.database() {
-            config.database = database.to_string();
-        }
-        if let Some(username) = url.username() {
-            config.username = username.to_string();
-        }
+        Err(e) => return Err(e.to_string()),
+    };
 
-        // Create a ConnectionInfo and connect
-        let info = ConnectionInfo {
-            id: config.id.clone(),
-            name: config.name.clone(),
-            db_type: config.db_type,
-            host: config.host.clone(),
-            port: config.port,
-            database: config.database.clone(),
-            username: config.username.clone(),
-            color: config.color.clone(),
-            environment: config.environment,
-            ssl_mode: config.ssl_mode,
-            group: config.group.clone(),
-            tags: config.tags.clone(),
-            ssh_enabled: config.ssh_enabled,
-            ssh_host: config.ssh_host.clone(),
-            ssh_port: config.ssh_port,
-            ssh_username: config.ssh_username.clone(),
-            ssh_auth_type: config.ssh_auth_type.clone(),
-            ssh_key_path: config.ssh_key_path.clone(),
-            extra_params: config.extra_params.clone(),
-            plugin_name: config.plugin_name.clone(),
-            created_at: config.created_at.clone(),
-            updated_at: config.updated_at.clone(),
-        };
+    let expected = match store.connections().ensure_link_nonce(connection_id) {
+        Ok(value) => value,
+        Err(e) => return Err(e.to_string()),
+    };
 
-        connect(&info, self.window_id, cx);
+    if !dbstudio_ui::url_scheme::nonce_matches(&expected, nonce) {
+        return Err(format!(
+            "Deep link rejected: nonce mismatch for connection {connection_id}"
+        ));
     }
+
+    Ok(info)
 }
 
 impl Render for Workspace {

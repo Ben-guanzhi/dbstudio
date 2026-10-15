@@ -1,6 +1,7 @@
 use anyhow::Result;
 use dbstudio_core::models::{ConnectionConfig, DatabaseType, SslMode};
 use sqlx::{Pool, Sqlite};
+use uuid::Uuid;
 
 const KEYRING_SERVICE: &str = dbstudio_core::NAMESPACE;
 const LEGACY_KEYRING_SERVICE: &str = dbstudio_core::LEGACY_NAMESPACE;
@@ -135,6 +136,29 @@ impl<'a> ConnectionsRepository<'a> {
         Ok(())
     }
 
+    /// 深链 nonce（`dbstudio://connect?id=<连接id>&nonce=<值>`）。深链只带连接
+    /// id 与 nonce，凭据不经过 URL——不进进程参数、不进 shell 历史、不进系统
+    /// 日志。nonce 存在 keyring（与密码同一层），删除连接时一并清除，所以删除
+    /// 即吊销该连接的所有深链。
+    pub fn get_link_nonce(&self, connection_id: &str) -> String {
+        Self::keyring_entry(&format!("link:{connection_id}"))
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
+            .unwrap_or_default()
+    }
+
+    /// 取 nonce，没有就生成一个。老版本保存的连接没有 nonce，第一次被深链唤起
+    /// 时惰性补齐，避免用户必须重新保存一次才能用。
+    pub fn ensure_link_nonce(&self, connection_id: &str) -> Result<String> {
+        let existing = self.get_link_nonce(connection_id);
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+        let nonce = Uuid::new_v4().simple().to_string();
+        Self::keyring_entry(&format!("link:{connection_id}"))?.set_password(&nonce)?;
+        Ok(nonce)
+    }
+
     pub async fn save(&self, info: &ConnectionConfig, password: &str) -> Result<()> {
         if !password.is_empty() {
             self.set_password(&info.id, password)?;
@@ -178,6 +202,11 @@ impl<'a> ConnectionsRepository<'a> {
         .execute(self.pool)
         .await?;
 
+        // 深链 nonce：每个已保存连接都带上一个吊销令牌（存 keyring，删除连接时一并
+        // 清除）。生成失败不影响保存本身——没有 nonce 只是意味着这个连接暂时无法被
+        // 深链唤起。
+        let _ = self.ensure_link_nonce(&info.id);
+
         Ok(())
     }
 
@@ -197,6 +226,9 @@ impl<'a> ConnectionsRepository<'a> {
             let _ = entry.delete_credential();
         }
         if let Ok(entry) = Self::keyring_entry(&format!("sshpass:{id}")) {
+            let _ = entry.delete_credential();
+        }
+        if let Ok(entry) = Self::keyring_entry(&format!("link:{id}")) {
             let _ = entry.delete_credential();
         }
         Ok(())
@@ -277,3 +309,7 @@ impl Row {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "connections_tests.rs"]
+mod tests;
