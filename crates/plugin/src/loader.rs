@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use crate::{
     abi::PluginTable,
     bridge::PluginBridge,
-    trust::{require_trusted, PluginTrust},
+    trust::{require_trusted, PluginTrust, TrustDecision},
     DatabasePlugin, PluginAbiVersionFn, PluginEntryFn, PluginInfo, PLUGIN_ABI_VERSION,
 };
 
@@ -16,6 +16,28 @@ use crate::{
 struct LoadedPlugin {
     _library: libloading::Library,
     plugin: Arc<dyn DatabasePlugin>,
+}
+
+/// A plugin library found on disk, plus what the trust gate would do with it.
+///
+/// 扫描结果，仅供展示用——不含库句柄。设置面板靠它把"目录里有个文件被拦下了"
+/// 变成用户能看到、能处理的一行，而不是只落在日志里的 `warn!`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginFile {
+    pub path: PathBuf,
+    pub decision: TrustDecision,
+    /// 字节数，便于用户确认自己放下的是不是预期的那个构建。
+    pub bytes: u64,
+}
+
+impl PluginFile {
+    /// 文件名，列表里真正需要被认出来的部分。
+    pub fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.path.display().to_string())
+    }
 }
 
 /// Plugin manager that handles loading and managing database driver plugins.
@@ -56,6 +78,49 @@ impl PluginManager {
     /// 信任清单的入口，用于登记或吊销一个插件。
     pub fn trust_store(&self) -> &PluginTrust {
         &self.trust
+    }
+
+    /// 配置的插件目录，供界面告诉用户把插件文件放哪儿。
+    pub fn plugin_dirs(&self) -> &[PathBuf] {
+        &self.plugin_dirs
+    }
+
+    /// 扫描所有插件目录，返回找到的每个插件库及其信任判定。
+    ///
+    /// 读不出摘要的文件不返回：它们既进不了清单也加载不了，列出来只会让人以为
+    /// 点一下「信任」就能修好。
+    pub fn scan_plugins(&self) -> Vec<PluginFile> {
+        let mut found = Vec::new();
+
+        for dir in &self.plugin_dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !is_plugin_library(&path) {
+                    continue;
+                }
+                let Ok((hash, bytes)) = PluginTrust::fingerprint(&path) else {
+                    continue;
+                };
+                let decision = match self.trust.decide(&path, &hash) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!("无法判定插件 {} 的信任状态：{e}", path.display());
+                        continue;
+                    }
+                };
+                found.push(PluginFile {
+                    path,
+                    decision,
+                    bytes,
+                });
+            }
+        }
+
+        found
     }
 
     /// 登记一个插件，返回它的摘要。登记后下一次 `load_all` 才会加载它。

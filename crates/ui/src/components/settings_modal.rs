@@ -1,13 +1,15 @@
 //! Settings overlay: theme / safe mode / Vim toggles with live values,
 //! opened from the header gear button, `Cmd/Ctrl+,` or the command palette.
 
+use std::path::Path;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     label::Label,
-    v_flex, ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
+    v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
 };
 
 use crate::state::AppState;
@@ -23,6 +25,10 @@ impl EventEmitter<SettingsEvent> for SettingsModal {}
 
 pub struct SettingsModal {
     is_open: bool,
+    /// A failed trust/revoke surfaces here; the buttons don't disable, so the
+    /// user can fix the underlying problem (unreadable file, unwritable store)
+    /// and try again instead of being stuck with a silent no-op.
+    error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -34,6 +40,7 @@ impl SettingsModal {
             let _subscriptions = vec![cx.observe_global::<AppState>(|_this, cx| cx.notify())];
             Self {
                 is_open: false,
+                error: None,
                 _subscriptions,
             }
         })
@@ -80,6 +87,122 @@ impl SettingsModal {
             )
             .child(control)
     }
+
+    /// 插件目录里的每个库文件 + 信任判定，以及「信任 / 撤销」按钮。
+    ///
+    /// 信任清单在磁盘上，插件目录也随时可写：不加这块的话，一个被拦下的插件只会
+    /// 变成日志里的一行 `warn!`，用户根本不知道有文件、也无处登记。
+    fn plugins_section(cx: &Context<Self>) -> Div {
+        let mut section = v_flex().gap_0p5().mt_1().child(
+            Label::new("Plugins")
+                .text_sm()
+                .font_semibold()
+                .text_color(cx.theme().muted_foreground),
+        );
+
+        let files = dbstudio_db::plugin_manager::scan_plugins();
+        if files.is_empty() {
+            return section.child(
+                Label::new("No plugin libraries installed.")
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            );
+        }
+
+        for file in files {
+            let trusted = file.decision == dbstudio_db::TrustDecision::Trusted;
+            let title = file.file_name();
+            let desc = match &file.decision {
+                dbstudio_db::TrustDecision::Trusted => {
+                    format!("Trusted · {} B — loaded", file.bytes)
+                }
+                dbstudio_db::TrustDecision::Unknown => {
+                    format!("Not trusted — blocked from loading · {} B", file.bytes)
+                }
+                dbstudio_db::TrustDecision::Tampered { actual, .. } => {
+                    format!(
+                        "Content changed since registration ({}) · {} B",
+                        hash_prefix(actual),
+                        file.bytes
+                    )
+                }
+            };
+
+            let control = h_flex()
+                .gap_1()
+                .child(
+                    Button::new(format!("settings-plugin-revoke-{title}"))
+                        .label("Revoke")
+                        .small()
+                        .ghost()
+                        .disabled(!trusted)
+                        .on_click(cx.listener({
+                            let path = file.path.clone();
+                            move |this, _: &ClickEvent, _window, cx| {
+                                this.plugin_trust_action(cx, &path, false);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new(format!("settings-plugin-trust-{title}"))
+                        .label(if trusted { "Re-trust" } else { "Trust" })
+                        .small()
+                        .when(trusted, |b| b.ghost())
+                        .when(!trusted, |b| b.primary())
+                        .on_click(cx.listener({
+                            let path = file.path.clone();
+                            move |this, _: &ClickEvent, _window, cx| {
+                                this.plugin_trust_action(cx, &path, true);
+                            }
+                        })),
+                );
+
+            section = section.child(Self::row(&title, &desc, control, cx));
+        }
+
+        section
+    }
+
+    /// 登记或撤销一个插件，然后重新扫描，使它不必重启就生效。
+    ///
+    /// 扫描本身要 `dlopen` 插件目录，所以这里在 UI 线程上同步做：插件数量是个位数，
+    /// 代价是一次文件系统读取加一次库加载，不值得为此引入一个异步往返。
+    fn plugin_trust_action(&mut self, cx: &mut Context<Self>, path: &Path, trust: bool) {
+        // The two operations return different payloads, so normalise them onto
+        // one shape: `Some(hash)` means "trusted", `None` means "deregistered".
+        let outcome = if trust {
+            dbstudio_db::plugin_manager::trust_plugin(path).map(Some)
+        } else {
+            dbstudio_db::plugin_manager::revoke_plugin(path).map(|_| None)
+        };
+
+        match outcome {
+            Ok(Some(hash)) => {
+                self.update_status(
+                    cx,
+                    format!("Plugin trusted and loaded: {}", hash_prefix(&hash)),
+                );
+            }
+            Ok(None) => {
+                self.update_status(cx, "Plugin deregistered and unloaded".to_string());
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+            }
+        }
+        cx.notify();
+    }
+
+    fn update_status(&self, cx: &mut Context<Self>, message: String) {
+        cx.update_global::<AppState, _>(|state, _cx| {
+            state.status_message = message;
+        });
+    }
+}
+
+/// 信任列表里只显示摘要前缀：完整 64 位 hex 在界面上一行放不下也不好比对。
+fn hash_prefix(hash: &str) -> String {
+    hash.get(..12).unwrap_or(hash).to_string()
 }
 
 impl Render for SettingsModal {
@@ -172,7 +295,11 @@ impl Render for SettingsModal {
                 "Vim key bindings in the SQL editor",
                 vim_control,
                 cx,
-            ));
+            ))
+            .child(Self::plugins_section(cx))
+            .when_some(self.error.clone(), |body, error| {
+                body.child(Label::new(error).text_xs().text_color(cx.theme().danger))
+            });
 
         let footer = h_flex()
             .id("settings-modal-footer")

@@ -264,8 +264,7 @@ async fn connect_inner(
     // receive the full config JSON and manage the connection themselves, so
     // the SSH tunnel path is skipped for plugin-backed connections.
     if let Some(plugin_name) = &config.plugin_name {
-        let plugin = crate::plugin_manager::plugin_manager()
-            .get_plugin_by_name(plugin_name)
+        let plugin = crate::plugin_manager::get_plugin_by_name(plugin_name)
             .ok_or_else(|| anyhow::anyhow!("driver plugin '{plugin_name}' is not loaded"))?;
         return connect_plugin(plugin, &config, password);
     }

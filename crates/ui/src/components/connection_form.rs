@@ -166,7 +166,7 @@ impl PluginOption {
             name: String::new(),
             title: "None (built-in driver)".to_string(),
         }];
-        for info in dbstudio_db::plugin_manager().list_plugins() {
+        for info in dbstudio_db::plugin_manager::list_plugins() {
             options.push(PluginOption {
                 name: info.name.clone(),
                 title: format!("{} v{} · {}", info.name, info.version, info.db_type),

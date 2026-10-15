@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::loader::{PluginFile, PluginManager};
 use crate::trust::{require_trusted, PluginTrust, TrustDecision};
 
 /// 每个测试一个独立目录，避免并行测试互相踩清单。
@@ -198,4 +199,133 @@ fn an_equivalent_path_spelling_still_matches() {
     let lossy = dir.to_string_lossy();
     let loose = Path::new(&format!("{lossy}\\")).join("driver.dll");
     assert_eq!(trust.check(&loose).unwrap(), TrustDecision::Trusted);
+}
+
+/// The library extension is platform-specific, so the scan tests write a file
+/// that the current platform actually recognises as a plugin.
+fn plugin_ext() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "dll",
+        "macos" => "dylib",
+        _ => "so",
+    }
+}
+
+fn write_file(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+    let path = dir.join(name);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+/// A manager whose scan only has to see files this test created. `sandbox`
+/// returns a throwaway directory, which is where the trust store lands; the
+/// built-in default directories stay untouched.
+fn scan_sandbox(tag: &str) -> (PathBuf, PluginManager) {
+    let (dir, trust) = sandbox(tag);
+    let mut manager = PluginManager::with_trust(trust);
+    manager.add_plugin_dir(dir.clone());
+    (dir, manager)
+}
+
+fn found(mgr: &PluginManager, path: &Path) -> Option<PluginFile> {
+    let stem = path.file_name()?;
+    mgr.scan_plugins()
+        .into_iter()
+        .find(|f| f.path.file_name() == Some(stem))
+}
+
+#[test]
+fn a_scan_reports_every_plugin_file_on_disk() {
+    let (dir, manager) = scan_sandbox("scan-unknown");
+    let file = write_file(
+        &dir,
+        &format!("driver.{ext}", ext = plugin_ext()),
+        b"original",
+    );
+
+    let plugin = found(&manager, &file).unwrap();
+    assert_eq!(plugin.decision, TrustDecision::Unknown);
+    assert_eq!(plugin.bytes, 8);
+
+    manager.trust_plugin(&file).unwrap();
+    let plugin = found(&manager, &file).unwrap();
+    assert_eq!(plugin.decision, TrustDecision::Trusted);
+
+    fs::write(&file, b"modified").unwrap();
+    let plugin = found(&manager, &file).unwrap();
+    match plugin.decision {
+        TrustDecision::Tampered { expected, actual } => {
+            assert_ne!(expected, actual);
+            assert_eq!(actual, PluginTrust::fingerprint(&file).unwrap().0);
+        }
+        other => panic!("expected Tampered after the file changed, got {other:?}"),
+    }
+
+    manager.revoke_plugin(&file).unwrap();
+    let plugin = found(&manager, &file).unwrap();
+    assert_eq!(plugin.decision, TrustDecision::Unknown);
+}
+
+#[test]
+fn a_scan_only_reports_plugin_libraries() {
+    let (dir, manager) = scan_sandbox("scan-noise");
+
+    // Anything that is not a library of the right extension is invisible to
+    // the loader, so it must also be invisible to the trust UI.
+    write_file(&dir, "README.md", b"how to install drivers");
+    write_file(&dir, "driver.txt", b"not a library");
+    write_file(
+        &dir,
+        &format!("driver.{other}", other = other_ext()),
+        b"wrong platform",
+    );
+    write_file(&dir, "notes", b"no extension at all");
+    fs::create_dir_all(dir.join("nested")).unwrap();
+
+    let real = write_file(&dir, &format!("driver.{ext}", ext = plugin_ext()), b"real");
+
+    let plugins = manager.scan_plugins();
+    assert!(plugins.iter().all(|p| p.file_name() != "README.md"));
+    assert!(plugins.iter().all(|p| p.file_name() != "driver.txt"));
+    assert!(plugins.iter().all(|p| p.file_name() != "notes"));
+    assert!(
+        found(&manager, &real).is_some(),
+        "the real plugin must still be found"
+    );
+}
+
+/// An extension the current platform deliberately does *not* treat as a plugin.
+fn other_ext() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "so",
+        "macos" => "dll",
+        _ => "dll",
+    }
+}
+
+#[test]
+fn a_precomputed_hash_agrees_with_a_direct_check() {
+    let (dir, trust) = sandbox("decide");
+    let file = write_file(
+        &dir,
+        &format!("driver.{ext}", ext = plugin_ext()),
+        b"stable bytes",
+    );
+
+    trust.trust(&file).unwrap();
+
+    let (hash, _) = PluginTrust::fingerprint(&file).unwrap();
+    assert_eq!(
+        trust.decide(&file, &hash).unwrap(),
+        trust.check(&file).unwrap()
+    );
+
+    let bogus = "0".repeat(hash.len());
+    assert!(
+        matches!(
+            trust.decide(&file, &bogus).unwrap(),
+            TrustDecision::Tampered { .. }
+        ),
+        "a wrong digest must still be caught"
+    );
 }

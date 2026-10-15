@@ -101,6 +101,11 @@ impl PluginTrust {
     /// 判定一个文件是否可信。
     pub fn check(&self, path: &Path) -> Result<TrustDecision> {
         let (actual, _) = Self::fingerprint(path)?;
+        self.decide(path, &actual)
+    }
+
+    /// 用已经算好的摘要判定，避免把同一个文件读两遍。
+    pub(crate) fn decide(&self, path: &Path, actual: &str) -> Result<TrustDecision> {
         let store = self.load_store()?;
 
         let Some(entry) = store
@@ -111,12 +116,12 @@ impl PluginTrust {
             return Ok(TrustDecision::Unknown);
         };
 
-        if entry.sha256.eq_ignore_ascii_case(&actual) {
+        if entry.sha256.eq_ignore_ascii_case(actual) {
             Ok(TrustDecision::Trusted)
         } else {
             Ok(TrustDecision::Tampered {
                 expected: entry.sha256.clone(),
-                actual,
+                actual: actual.to_string(),
             })
         }
     }
