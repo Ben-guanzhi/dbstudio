@@ -6,8 +6,10 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use crate::{
-    abi::PluginTable, bridge::PluginBridge, DatabasePlugin, PluginAbiVersionFn, PluginEntryFn,
-    PluginInfo, PLUGIN_ABI_VERSION,
+    abi::PluginTable,
+    bridge::PluginBridge,
+    trust::{require_trusted, PluginTrust},
+    DatabasePlugin, PluginAbiVersionFn, PluginEntryFn, PluginInfo, PLUGIN_ABI_VERSION,
 };
 
 /// A loaded plugin with its library handle.
@@ -17,14 +19,23 @@ struct LoadedPlugin {
 }
 
 /// Plugin manager that handles loading and managing database driver plugins.
+///
+/// 加载前先过 [`PluginTrust`]：插件目录是本机可写的位置，里面任何一个文件都会被
+/// 无条件 `dlopen`，也就等于无条件执行一段来路不明的代码。
 pub struct PluginManager {
     plugins: HashMap<String, LoadedPlugin>,
     plugin_dirs: Vec<PathBuf>,
+    trust: PluginTrust,
 }
 
 impl PluginManager {
     /// Create a new plugin manager.
     pub fn new() -> Self {
+        Self::with_trust(PluginTrust::at_default())
+    }
+
+    /// Create a plugin manager with an explicit trust store location.
+    pub fn with_trust(trust: PluginTrust) -> Self {
         let mut plugin_dirs = Vec::new();
 
         // Add default plugin directories
@@ -38,7 +49,23 @@ impl PluginManager {
         Self {
             plugins: HashMap::new(),
             plugin_dirs,
+            trust,
         }
+    }
+
+    /// 信任清单的入口，用于登记或吊销一个插件。
+    pub fn trust_store(&self) -> &PluginTrust {
+        &self.trust
+    }
+
+    /// 登记一个插件，返回它的摘要。登记后下一次 `load_all` 才会加载它。
+    pub fn trust_plugin(&self, path: &Path) -> Result<String> {
+        self.trust.trust(path)
+    }
+
+    /// 吊销一个插件：下次加载前必须先重新登记。
+    pub fn revoke_plugin(&self, path: &Path) -> Result<()> {
+        self.trust.revoke(path)
     }
 
     /// Add a directory to search for plugins.
@@ -80,6 +107,9 @@ impl PluginManager {
 
     /// Load a single plugin from a path.
     pub fn load_plugin(&mut self, path: &Path) -> Result<PluginInfo> {
+        // 信任判定必须在打开库之前：`Library::new` 一执行就跑插件的初始化代码。
+        require_trusted(&self.trust, path)?;
+
         unsafe {
             let library = libloading::Library::new(path)
                 .with_context(|| format!("Failed to load library: {}", path.display()))?;

@@ -1,6 +1,9 @@
 pub mod abi;
 pub mod bridge;
 pub mod loader;
+pub mod trust;
+
+pub use trust::{PluginTrust, TrustDecision, TrustedPlugin};
 
 #[cfg(test)]
 #[path = "loader_tests.rs"]
