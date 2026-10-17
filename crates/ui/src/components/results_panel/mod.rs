@@ -291,13 +291,13 @@ impl ResultsPanel {
                         // the window; any other query starts a fresh base.
                         if this.last_sent_sql.as_deref() == Some(query.sql.as_str()) {
                             this.last_sent_sql = None;
-                            this.more_pages = query.rows.len() >= this.page_size;
+                            this.more_pages = query.row_len() >= this.page_size;
                         } else {
                             this.base_sql = Some(query.sql.clone());
                             this.page_offset = 0;
                             this.page_history.clear();
                             this.server_filter = None;
-                            this.more_pages = query.truncated;
+                            this.more_pages = query.truncated();
                         }
 
                         // The delegate reads the session's own grid through
@@ -337,13 +337,36 @@ impl ResultsPanel {
                 }
             }
 
+            // Same handle as before (no new query/result replaced it), but a
+            // load-more append may have grown the shared grid in place. Grow the
+            // delegate's derived row order to match (Θ(new rows)) and repaint;
+            // the handle address did not change, so the pointer comparison above
+            // alone would never have refreshed the grid.
+            let grid_grew = if !result_changed {
+                let live = this.result.as_deref().and_then(|r| match r {
+                    SqlResult::Query(q) => Some(q.row_len()),
+                    _ => None,
+                });
+                live.is_some_and(|live| {
+                    this.table.update(cx, |table, cx| {
+                        let grew = table.delegate_mut().grow_to(live);
+                        if grew {
+                            table.refresh(cx);
+                        }
+                        grew
+                    })
+                })
+            } else {
+                false
+            };
+
             let got_schema = pending_schema.is_some();
             if let Some(schema) = pending_schema {
                 this.selected_schema = Some(schema);
                 this.pending_table = None;
             }
 
-            if result_changed || got_schema {
+            if result_changed || got_schema || grid_grew {
                 cx.notify();
             }
         })];
@@ -364,7 +387,7 @@ impl ResultsPanel {
             _ => None,
         };
         let initial_more_pages =
-            matches!(initial_result.as_deref(), Some(SqlResult::Query(q)) if q.truncated);
+            matches!(initial_result.as_deref(), Some(SqlResult::Query(q)) if q.truncated());
 
         Self {
             window_id,
@@ -452,7 +475,8 @@ impl ResultsPanel {
         match self.result.as_deref() {
             Some(SqlResult::Query(q)) => {
                 let col = self.filter_col_index.min(q.columns.len().saturating_sub(1));
-                q.rows
+                let g = q.grid.read();
+                g.rows
                     .iter()
                     .find_map(|row| row.get(col).filter(|c| !c.is_null).map(|c| c.kind))
                     .unwrap_or(CellType::Text)
@@ -725,11 +749,15 @@ impl ResultsPanel {
         let panel = cx.entity().downgrade();
         cx.spawn(async move |_this, cx| {
             let values = match conn.execute(&paged).await {
-                Ok(SqlResult::Query(q)) => q
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.first().filter(|c| !c.is_null).map(|c| c.value.clone()))
-                    .collect::<Vec<_>>(),
+                Ok(SqlResult::Query(q)) => {
+                    let g = q.grid.read();
+                    g.rows
+                        .iter()
+                        .filter_map(|row| {
+                            row.first().filter(|c| !c.is_null).map(|c| c.value.clone())
+                        })
+                        .collect::<Vec<_>>()
+                }
                 _ => Vec::new(),
             };
             cx.update(|app| {

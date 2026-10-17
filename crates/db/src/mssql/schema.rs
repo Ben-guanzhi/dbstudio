@@ -74,7 +74,7 @@ impl MssqlConnection {
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         match result {
             SqlResult::Query(q) => Ok(q
-                .rows
+                .rows_snapshot()
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| {

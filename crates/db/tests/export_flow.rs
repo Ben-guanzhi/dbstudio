@@ -97,10 +97,11 @@ fn export_import_round_trip_preserves_data() {
         let dbstudio_core::result::SqlResult::Query(q) = result else {
             panic!("expected query");
         };
-        assert_eq!(q.row_count, 4, "all rows should round-trip");
-        assert_eq!(q.rows[0][1].value, "apple");
+        assert_eq!(q.row_count(), 4, "all rows should round-trip");
+        let g = q.grid.read();
+        assert_eq!(g.rows[0][1].value, "apple");
         assert_eq!(
-            q.rows[3][1].value, "o'brien",
+            g.rows[3][1].value, "o'brien",
             "escaped quote should round-trip"
         );
     });

@@ -157,15 +157,15 @@ fn execute_inner(handle: &str, sql: &str) -> anyhow::Result<SqlResult> {
             }
         }
 
-        let mut result = QueryResult {
+        let result = QueryResult::new(
             columns,
             rows,
-            row_count: 0,
-            total_row_count: 0,
-            execution_time_ms: start.elapsed().as_millis(),
-            sql: sql.to_string(),
-            truncated: false,
-        };
+            0,
+            0,
+            start.elapsed().as_millis(),
+            sql.to_string(),
+            false,
+        );
         result.truncate_rows(MAX_RESULT_ROWS);
         Ok(SqlResult::Query(result))
     } else {
@@ -195,7 +195,7 @@ fn list_tables_inner(handle: &str, _schema: &str) -> anyhow::Result<Vec<TableInf
     )?;
     match result {
         SqlResult::Query(q) => Ok(q
-            .rows
+            .rows_snapshot()
             .into_iter()
             .map(|row| TableInfo {
                 name: cell_str(&row, 0),
@@ -221,7 +221,7 @@ fn list_columns_inner(handle: &str, table: &str, _schema: &str) -> anyhow::Resul
     )?;
     match result {
         SqlResult::Query(q) => Ok(q
-            .rows
+            .rows_snapshot()
             .into_iter()
             .enumerate()
             .map(|(i, row)| ColumnInfo {
@@ -246,7 +246,7 @@ fn list_indexes_inner(handle: &str, table: &str, _schema: &str) -> anyhow::Resul
     )?;
     let mut indexes = Vec::new();
     if let SqlResult::Query(q) = result {
-        for row in q.rows {
+        for row in q.rows_snapshot() {
             let name = cell_str(&row, 0);
             if name.is_empty() {
                 continue;
@@ -261,7 +261,11 @@ fn list_indexes_inner(handle: &str, table: &str, _schema: &str) -> anyhow::Resul
                 &format!("PRAGMA index_info({})", quote_ident(&name)),
             )
             .map(|r| match r {
-                SqlResult::Query(q) => q.rows.into_iter().map(|c| cell_str(&c, 2)).collect(),
+                SqlResult::Query(q) => q
+                    .rows_snapshot()
+                    .into_iter()
+                    .map(|c| cell_str(&c, 2))
+                    .collect(),
                 _ => Vec::new(),
             })
             .unwrap_or_default();
@@ -290,7 +294,7 @@ fn list_foreign_keys_inner(
     )?;
     match result {
         SqlResult::Query(q) => Ok(q
-            .rows
+            .rows_snapshot()
             .into_iter()
             .map(|row| ForeignKeyInfo {
                 name: String::new(),
@@ -316,7 +320,7 @@ fn get_create_table_sql_inner(handle: &str, table: &str, _schema: &str) -> anyho
     )?;
     Ok(match result {
         SqlResult::Query(q) => q
-            .rows
+            .rows_snapshot()
             .first()
             .and_then(|r| r.first())
             .map(|c| c.value.clone())

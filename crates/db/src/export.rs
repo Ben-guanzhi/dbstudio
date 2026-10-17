@@ -156,19 +156,21 @@ pub async fn export_database(
                 // The driver caps SELECT results for the interactive grid. If it
                 // did, the dump is missing rows even though the export
                 // "succeeded" — record that so callers can warn instead of
-                // reporting a complete export.
-                stats.partial |= q.truncated;
-                stats.rows_exported += q.rows.len();
+                // reporting a complete export. Snapshot the rows once so the
+                // file writes below run over stable data (the grid is shared).
+                let rows = q.rows_snapshot();
+                stats.partial |= q.truncated();
+                stats.rows_exported += rows.len();
                 stats.tables_exported += 1;
 
-                if !q.rows.is_empty() {
+                if !rows.is_empty() {
                     // Get column names
                     let columns: Vec<String> = q.columns.iter().map(|c| c.name.clone()).collect();
                     let quoted_columns: Vec<String> =
                         columns.iter().map(|c| quote_ident(&db_type, c)).collect();
 
                     // Generate INSERT statements
-                    for row in &q.rows {
+                    for row in &rows {
                         let values: Vec<String> = row
                             .iter()
                             .map(|cell| {

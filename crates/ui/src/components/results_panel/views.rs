@@ -233,13 +233,19 @@ impl ResultsPanel {
             Some(SqlResult::Query(query)) => div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(if query.truncated {
+                .child(if query.truncated() {
                     format!(
                         "showing {} of {}+ rows · {} ms",
-                        query.row_count, query.total_row_count, query.execution_time_ms
+                        query.row_count(),
+                        query.total_row_count(),
+                        query.execution_time_ms()
                     )
                 } else {
-                    format!("{} rows · {} ms", query.row_count, query.execution_time_ms)
+                    format!(
+                        "{} rows · {} ms",
+                        query.row_count(),
+                        query.execution_time_ms()
+                    )
                 })
                 .into_any_element(),
             _ => div().into_any_element(),
@@ -250,7 +256,7 @@ impl ResultsPanel {
     /// the row cap so the user can page through the remaining rows.
     pub(super) fn render_load_more_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let is_truncated =
-            matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if q.truncated);
+            matches!(self.result.as_deref(), Some(SqlResult::Query(q)) if q.truncated());
         if !is_truncated {
             return div().into_any_element();
         }

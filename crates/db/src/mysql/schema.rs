@@ -10,7 +10,7 @@ impl MySqlConnection {
         match result {
             SqlResult::Query(q) => {
                 let system = ["information_schema", "performance_schema", "mysql", "sys"];
-                Ok(q.rows
+                Ok(q.rows_snapshot()
                     .into_iter()
                     .filter_map(|row| {
                         let name = row.first()?.value.clone();
@@ -65,7 +65,7 @@ impl MySqlConnection {
         let result = self.execute_parameterized(sql, &[table]).await?;
         match result {
             SqlResult::Query(q) => Ok(q
-                .rows
+                .rows_snapshot()
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| {

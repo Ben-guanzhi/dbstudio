@@ -1,5 +1,7 @@
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
 use crate::schema::ColumnInfo;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const MAX_RESULT_ROWS: usize = 10_000;
 
@@ -15,15 +17,16 @@ impl SqlResult {
     /// `SELECT DB_NAME()`.
     ///
     /// Returns `None` for modified/error results or when no rows came back.
-    pub fn first_cell(&self) -> Option<&ResultCell> {
+    /// Owned: the grid is shared, so a borrow cannot escape the lock.
+    pub fn first_cell(&self) -> Option<ResultCell> {
         match self {
             SqlResult::Query(q) => q.first_cell(),
             _ => None,
         }
     }
 
-    /// The first row of a query result, if any.
-    pub fn first_row(&self) -> Option<&Row> {
+    /// The first row of a query result, if any (owned, see `first_cell`).
+    pub fn first_row(&self) -> Option<Row> {
         match self {
             SqlResult::Query(q) => q.first_row(),
             _ => None,
@@ -31,15 +34,143 @@ impl SqlResult {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryResult {
-    pub columns: Vec<ColumnInfo>,
+/// Shared, live grid of a query result.
+///
+/// The rows and the few result counters that a load-more append mutates live
+/// behind one `RwLock`. A page append is an in-place `extend` (Θ(page)), not a
+/// copy-on-write deep copy of the whole accumulated grid - `Arc::make_mut` used
+/// to pay Θ(total) of cell copies per page (Θ(k²·P) across k pages) because the
+/// results panel and the table delegate each held a clone of the `Arc`. Readers
+/// (the delegate, the info bar, exports) take a read lock; a writer (the
+/// load-more append) takes the write lock briefly.
+#[derive(Debug)]
+pub struct Grid {
+    pub(crate) inner: RwLock<GridInner>,
+}
+
+/// The mutable part of a result grid: the rows plus the counters a load-more
+/// rewrite. Everything else (`columns`, `sql`) stays immutable on `QueryResult`.
+#[derive(Debug)]
+pub struct GridInner {
     pub rows: Vec<Vec<ResultCell>>,
     pub row_count: usize,
     pub total_row_count: usize,
     pub execution_time_ms: u128,
-    pub sql: String,
     pub truncated: bool,
+}
+
+/// What a load-more append records after extending the rows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppendMeta {
+    pub execution_time_ms: u128,
+    pub truncated: bool,
+}
+
+#[derive(Debug)]
+pub struct QueryResult {
+    pub columns: Vec<ColumnInfo>,
+    pub sql: String,
+    /// The live, shareable grid. Cloning a `QueryResult`/`SqlResult` bumps the
+    /// refcount only - the rows are read through the grid, never copied.
+    pub grid: Arc<Grid>,
+}
+
+impl Grid {
+    pub fn new(inner: GridInner) -> Self {
+        Self {
+            inner: RwLock::new(inner),
+        }
+    }
+    /// A read lock over the grid's mutable part.
+    pub fn read(&self) -> RwLockReadGuard<'_, GridInner> {
+        self.inner.read().unwrap()
+    }
+    /// A write lock over the grid's mutable part (the load-more append path).
+    pub fn write(&self) -> RwLockWriteGuard<'_, GridInner> {
+        self.inner.write().unwrap()
+    }
+    /// Live row count.
+    pub fn len(&self) -> usize {
+        self.read().rows.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.read().rows.is_empty()
+    }
+}
+
+impl Clone for QueryResult {
+    fn clone(&self) -> Self {
+        Self {
+            columns: self.columns.clone(),
+            sql: self.sql.clone(),
+            grid: Arc::clone(&self.grid),
+        }
+    }
+}
+
+// Wire compatibility: the plugin C-ABI is the only serde boundary, and its
+// shape is the flat 7-field object `{columns, rows, row_count, total_row_count,
+// execution_time_ms, sql, truncated}` where `rows` is a 2-D array of the 4-field
+// cells. `Serialize`/`Deserialize` are written by hand so that `grid`
+// transparently presents exactly that shape: `rows`/counters/truncated are read
+// out of the shared grid on the way out, and a deserialized grid is rebuilt from
+// them. `ResultCell`/`CellType`/`ColumnInfo` keep their derived
+// (de)serialization, so the rest of the wire - including `sort_value: null`,
+// `kind: "text"` and the `#[serde(default)]` tolerance for missing
+// `kind`/`sort_value` - is unchanged.
+impl Serialize for QueryResult {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        // Serialize through a same-field, same-order proxy so the output is
+        // byte-identical to the old derived shape while the mutable fields come
+        // out of the live grid.
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            columns: &'a [ColumnInfo],
+            rows: &'a [Vec<ResultCell>],
+            row_count: &'a usize,
+            total_row_count: &'a usize,
+            execution_time_ms: &'a u128,
+            sql: &'a str,
+            truncated: &'a bool,
+        }
+        let g = self.grid.read();
+        Wire {
+            columns: &self.columns,
+            rows: &g.rows,
+            row_count: &g.row_count,
+            total_row_count: &g.total_row_count,
+            execution_time_ms: &g.execution_time_ms,
+            sql: &self.sql,
+            truncated: &g.truncated,
+        }
+        .serialize(ser)
+    }
+}
+
+#[derive(Deserialize)]
+struct QueryResultWire {
+    columns: Vec<ColumnInfo>,
+    rows: Vec<Vec<ResultCell>>,
+    row_count: usize,
+    total_row_count: usize,
+    execution_time_ms: u128,
+    sql: String,
+    truncated: bool,
+}
+
+impl<'de> Deserialize<'de> for QueryResult {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let w = QueryResultWire::deserialize(d)?;
+        Ok(QueryResult::new(
+            w.columns,
+            w.rows,
+            w.row_count,
+            w.total_row_count,
+            w.execution_time_ms,
+            w.sql,
+            w.truncated,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,37 +398,113 @@ impl RowExt for Row {
 }
 
 impl QueryResult {
-    /// The first row, if any rows came back.
-    pub fn first_row(&self) -> Option<&Row> {
-        self.rows.first()
-    }
-
-    /// The first cell of the first row, if any rows came back.
-    pub fn first_cell(&self) -> Option<&ResultCell> {
-        self.rows.first().and_then(|r| r.first())
-    }
-
-    pub fn empty(sql: impl Into<String>) -> Self {
+    /// Build a result wrapping `rows` in a fresh shared grid. This is the
+    /// constructor every driver/export path uses in place of the old struct
+    /// literal; it is where the (previously field-level) counters move into the
+    /// grid.
+    pub fn new(
+        columns: Vec<ColumnInfo>,
+        rows: Vec<Vec<ResultCell>>,
+        row_count: usize,
+        total_row_count: usize,
+        execution_time_ms: u128,
+        sql: String,
+        truncated: bool,
+    ) -> Self {
         Self {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            row_count: 0,
-            total_row_count: 0,
-            execution_time_ms: 0,
-            sql: sql.into(),
-            truncated: false,
+            grid: Arc::new(Grid::new(GridInner {
+                rows,
+                row_count,
+                total_row_count,
+                execution_time_ms,
+                truncated,
+            })),
+            columns,
+            sql,
         }
     }
 
-    pub fn truncate_rows(&mut self, max_rows: usize) {
-        self.total_row_count = self.rows.len();
-        if self.rows.len() > max_rows {
-            self.rows.truncate(max_rows);
-            self.row_count = max_rows;
-            self.truncated = true;
+    /// The first row, owned (the grid is shared, so no borrow escapes the lock).
+    pub fn first_row(&self) -> Option<Row> {
+        self.grid.read().rows.first().cloned()
+    }
+
+    /// The first cell of the first row, owned.
+    pub fn first_cell(&self) -> Option<ResultCell> {
+        self.grid
+            .read()
+            .rows
+            .first()
+            .and_then(|r| r.first())
+            .cloned()
+    }
+
+    pub fn empty(sql: impl Into<String>) -> Self {
+        Self::new(Vec::new(), Vec::new(), 0, 0, 0, sql.into(), false)
+    }
+
+    /// The shared live grid handle.
+    pub fn grid(&self) -> &Arc<Grid> {
+        &self.grid
+    }
+
+    /// Live row count of the grid (reads the lock; cheap when uncontended).
+    pub fn row_len(&self) -> usize {
+        self.grid.len()
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.grid.read().row_count
+    }
+
+    pub fn total_row_count(&self) -> usize {
+        self.grid.read().total_row_count
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.grid.read().truncated
+    }
+
+    pub fn execution_time_ms(&self) -> u128 {
+        self.grid.read().execution_time_ms
+    }
+
+    /// A snapshot of the current rows under one read-lock acquisition - what a
+    /// background export thread iterates so it sees a stable table.
+    pub fn rows_snapshot(&self) -> Vec<Vec<ResultCell>> {
+        self.grid.read().rows.clone()
+    }
+
+    /// Append a page in place: Θ(page), no copy of the accumulated rows. This is
+    /// the load-more path that used to be an `Arc::make_mut` COW deep copy.
+    pub fn append_rows(&self, page: Vec<Vec<ResultCell>>, meta: AppendMeta) -> usize {
+        let added = page.len();
+        let mut g = self.grid.write();
+        g.rows.extend(page);
+        g.row_count = g.rows.len();
+        g.total_row_count = if meta.truncated {
+            g.rows.len().saturating_add(1)
         } else {
-            self.row_count = self.rows.len();
-            self.truncated = false;
+            g.rows.len()
+        };
+        g.truncated = meta.truncated;
+        g.execution_time_ms = meta.execution_time_ms;
+        added
+    }
+
+    /// Driver-side cap, run before the grid is shared: rewrite the counters and
+    /// drop the overflow. (Now `&self` - it goes through the grid's write lock,
+    /// which at build time is uncontended since the grid is the sole owner.)
+    pub fn truncate_rows(&self, max_rows: usize) {
+        let mut g = self.grid.write();
+        g.total_row_count = g.rows.len();
+        if g.rows.len() > max_rows {
+            g.rows.truncate(max_rows);
+            g.row_count = max_rows;
+            g.truncated = true;
+        } else {
+            g.row_count = g.rows.len();
+            g.truncated = false;
         }
     }
 }

@@ -80,7 +80,6 @@ impl ResultsPanel {
                 .map(|c| {
                     delegate
                         .cell_named(row_ix, &c.name)
-                        .cloned()
                         .unwrap_or_else(ResultCell::null)
                 })
                 .collect()

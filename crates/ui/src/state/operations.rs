@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dbstudio_core::ai::LlmConfig;
 use dbstudio_core::models::{ConnectionConfig, DatabaseType};
-use dbstudio_core::result::{QueryResult, SqlResult, MAX_RESULT_ROWS};
+use dbstudio_core::result::{AppendMeta, QueryResult, SqlResult, MAX_RESULT_ROWS};
 use dbstudio_core::schema::{DatabaseInfo, TableSchema};
 use dbstudio_db::Connection;
 use dbstudio_storage::types::{ConnectionInfo, ConnectionStatus, QueryHistoryEntry};
@@ -186,7 +186,7 @@ fn spawn_execution(exec: ExecContext, sql: String, cx: &mut App) {
                 // of up to 10 000 rows on its way behind the `Arc`.
                 Ok(result) => {
                     let (exec_ms, rc, err) = match &result {
-                        SqlResult::Query(q) => (q.execution_time_ms, Some(q.row_count), false),
+                        SqlResult::Query(q) => (q.execution_time_ms(), Some(q.row_count()), false),
                         SqlResult::Modified(m) => (m.execution_time_ms, None, false),
                         SqlResult::Error(_) => (0, None, true),
                     };
@@ -418,12 +418,12 @@ pub fn load_more_rows(window_id: u64, cx: &mut App) {
         let conn = state.active_connection_for(window_id)?;
         let session = state.active_session_for(window_id)?;
         let query = match session.last_result.as_deref() {
-            Some(SqlResult::Query(q)) if q.truncated => q,
+            Some(SqlResult::Query(q)) if q.truncated() => q,
             _ => return None,
         };
         Some((
             query.sql.clone(),
-            query.rows.len(),
+            query.row_len(),
             conn.db_type(),
             conn.clone(),
         ))
@@ -489,26 +489,26 @@ fn apply_load_more(state: &mut AppState, session_id: Option<u64>, page: QueryRes
     let Some(s) = state.session_mut(sid) else {
         return 0;
     };
-    if s.last_result.is_none() {
+    let result = match s.last_result.as_ref() {
+        Some(r) => r,
+        None => return 0,
+    };
+    let SqlResult::Query(existing) = result.as_ref() else {
         return 0;
-    }
-    // Append the new page in place: Arc::make_mut gives a mutable borrow without
-    // cloning the accumulated rows, so k pages cost Θ(total) not Θ(k²).
-    let added = page.rows.len();
-    if let Some(result) = &mut s.last_result {
-        if let SqlResult::Query(existing) = Arc::make_mut(result) {
-            existing.rows.extend(page.rows);
-            existing.row_count = existing.rows.len();
-            existing.total_row_count = if page.truncated {
-                existing.rows.len().saturating_add(1)
-            } else {
-                existing.rows.len()
-            };
-            existing.truncated = page.truncated;
-            existing.execution_time_ms = page.execution_time_ms;
-        }
-    }
-    added
+    };
+    // In-place append into the session's shared grid (Θ(page)): the panel and the
+    // table delegate read the same `Arc<Grid>` live, so a page append extends the
+    // existing rows instead of copy-on-write cloning the whole accumulated grid
+    // (the old `Arc::make_mut` paid Θ(total) of that per page, Θ(k²·P) across k).
+    // The handle address stays put - the panel's observer detects the growth by
+    // the grid's live row count (see `ResultsPanel`), not by a new address.
+    existing.append_rows(
+        page.rows_snapshot(),
+        AppendMeta {
+            execution_time_ms: page.execution_time_ms(),
+            truncated: page.truncated(),
+        },
+    )
 }
 
 fn record_history(
@@ -1116,7 +1116,13 @@ fn run_edit(
     cx.spawn(async move |cx| {
         let result = conn.execute(&sql).await;
         let (exec_ms, row_count, is_error, failure, lost) = match &result {
-            Ok(SqlResult::Query(q)) => (q.execution_time_ms, Some(q.row_count), false, None, false),
+            Ok(SqlResult::Query(q)) => (
+                q.execution_time_ms(),
+                Some(q.row_count()),
+                false,
+                None,
+                false,
+            ),
             Ok(SqlResult::Modified(m)) => (m.execution_time_ms, None, false, None, false),
             Ok(SqlResult::Error(e)) => (0, None, true, Some(e.message.clone()), false),
             Err(e) => (0, None, true, Some(e.to_string()), e.is_connection_lost()),
@@ -1294,7 +1300,9 @@ pub fn apply_edits_sequentially(edits: Vec<guard::PendingWrite>, window_id: u64,
         for edit in edits {
             let result = conn.execute(&edit.sql).await;
             let (exec_ms, row_count, is_error, failure) = match &result {
-                Ok(SqlResult::Query(q)) => (q.execution_time_ms, Some(q.row_count), false, None),
+                Ok(SqlResult::Query(q)) => {
+                    (q.execution_time_ms(), Some(q.row_count()), false, None)
+                }
                 Ok(SqlResult::Modified(m)) => (m.execution_time_ms, None, false, None),
                 Ok(SqlResult::Error(e)) => (0, None, true, Some(e.message.clone())),
                 Err(e) => (0, None, true, Some(e.to_string())),

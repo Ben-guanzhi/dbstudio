@@ -73,9 +73,10 @@ fn sqlite_full_flow() {
             panic!("expected query result");
         };
         assert_eq!(q.columns.len(), 2);
-        assert_eq!(q.row_count, 2);
-        assert_eq!(q.rows[0][1].value, "alice");
-        assert_eq!(q.rows[1][1].value, "bob");
+        assert_eq!(q.row_count(), 2);
+        let rows = q.rows_snapshot();
+        assert_eq!(rows[0][1].value, "alice");
+        assert_eq!(rows[1][1].value, "bob");
 
         // Introspection
         let tables = dbstudio_db::list_tables(&conn, "").await.expect("tables");

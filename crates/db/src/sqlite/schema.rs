@@ -48,7 +48,7 @@ impl SqliteConnection {
 
         match result {
             SqlResult::Query(q) => Ok(q
-                .rows
+                .rows_snapshot()
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| {
@@ -76,7 +76,7 @@ impl SqliteConnection {
         match result {
             SqlResult::Query(q) => {
                 let mut indexes = Vec::new();
-                for row in q.rows {
+                for row in q.rows_snapshot() {
                     let name = row.first_str();
                     let is_unique = row.cell_is(1, "1");
                     indexes.push(IndexInfo {

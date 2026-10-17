@@ -8,7 +8,7 @@ use sqlx::{Column, TypeInfo};
 /// Returns `Ok(vec)` on success, or `Ok(vec![])` if the result is not a query.
 pub fn map_query_result<T>(result: SqlResult, mapper: impl FnMut(Vec<ResultCell>) -> T) -> Vec<T> {
     match result {
-        SqlResult::Query(q) => q.rows.into_iter().map(mapper).collect(),
+        SqlResult::Query(q) => q.rows_snapshot().into_iter().map(mapper).collect(),
         _ => vec![],
     }
 }
@@ -21,7 +21,11 @@ pub fn try_map_query_result<T>(
     mapper: impl FnMut(Vec<ResultCell>) -> anyhow::Result<T>,
 ) -> anyhow::Result<Vec<T>> {
     match result {
-        SqlResult::Query(q) => q.rows.into_iter().map(mapper).collect(),
+        SqlResult::Query(q) => q
+            .rows_snapshot()
+            .into_iter()
+            .map(mapper)
+            .collect::<anyhow::Result<Vec<T>>>(),
         _ => Ok(vec![]),
     }
 }
@@ -213,15 +217,15 @@ where
     <R::Database as sqlx::Database>::Column: sqlx::Column,
 {
     if rows.is_empty() {
-        return SqlResult::Query(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            row_count: 0,
-            total_row_count: 0,
-            execution_time_ms: elapsed_ms,
+        return SqlResult::Query(QueryResult::new(
+            Vec::new(),
+            Vec::new(),
+            0,
+            0,
+            elapsed_ms,
             sql,
-            truncated: false,
-        });
+            false,
+        ));
     }
 
     let columns: Vec<ColumnInfo> = rows[0]
@@ -272,21 +276,12 @@ pub fn finalize_query_result_capped(
     elapsed_ms: u128,
     max_rows: Option<usize>,
 ) -> SqlResult {
-    let mut result = QueryResult {
-        columns,
-        rows,
-        row_count: 0,
-        total_row_count: 0,
-        execution_time_ms: elapsed_ms,
-        sql,
-        truncated: false,
-    };
+    let result = QueryResult::new(columns, rows, 0, 0, elapsed_ms, sql, false);
     match max_rows {
         Some(cap) => result.truncate_rows(cap),
-        None => {
-            result.row_count = result.rows.len();
-            result.total_row_count = result.rows.len();
-        }
+        // No cap (export): keep every row already fetched - a cap of usize::MAX
+        // sets both counters to the full row count and leaves `truncated` false.
+        None => result.truncate_rows(usize::MAX),
     }
     SqlResult::Query(result)
 }

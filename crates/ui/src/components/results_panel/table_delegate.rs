@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::RwLockReadGuard;
 
-use dbstudio_core::result::{CellType, QueryResult, SqlResult};
+use dbstudio_core::result::{CellType, GridInner, QueryResult, SqlResult};
 
 use crate::fold::{contains_ignore_case, fold_into_chars, starts_with_ignore_case};
 
@@ -420,13 +421,12 @@ impl ResultsTableDelegate {
         }
     }
 
-    /// The rows of the shared handle, in storage order (see `data_col`
-    /// for how display slots map into it).
-    fn rows(&self) -> &[Vec<ResultCell>] {
-        match self.query() {
-            Some(q) => q.rows.as_slice(),
-            None => &[],
-        }
+    /// Read-lock the shared live grid for the duration of a single method.
+    /// `None` when the source is a non-query result or the reset state (no
+    /// grid). Each method takes its own guard so the (uncontended) read lock is
+    /// held only across that method - never across a whole render frame.
+    fn guard(&self) -> Option<RwLockReadGuard<'_, GridInner>> {
+        self.query().map(|q| q.grid.read())
     }
 
     /// Storage index of display slot `slot`; slots the permutation does not
@@ -438,7 +438,7 @@ impl ResultsTableDelegate {
 
     pub(super) fn update(&mut self, source: Option<Arc<SqlResult>>) {
         self.source = source;
-        self.order = (0..self.rows().len()).collect();
+        self.order = (0..self.guard().map_or(0, |g| g.rows.len())).collect();
         self.sort_col = None;
         self.sort_asc = true;
         self.modified_cells.clear();
@@ -450,14 +450,15 @@ impl ResultsTableDelegate {
                 .enumerate()
                 .map(|(col_ix, col)| {
                     let header_len = col.name.chars().count().max(1);
-                    let cell_len = self
-                        .rows()
-                        .iter()
-                        .take(WIDTH_SAMPLE_ROWS)
-                        .filter_map(|row| row.get(col_ix))
-                        .map(|cell| cell.value.chars().take(MAX_MEASURED_CHARS).count())
-                        .max()
-                        .unwrap_or(0);
+                    let cell_len = self.guard().map_or(0, |g| {
+                        g.rows
+                            .iter()
+                            .take(WIDTH_SAMPLE_ROWS)
+                            .filter_map(|row| row.get(col_ix))
+                            .map(|cell| cell.value.chars().take(MAX_MEASURED_CHARS).count())
+                            .max()
+                            .unwrap_or(0)
+                    });
                     let width = (header_len.max(cell_len) as f32 * 7.5 + 24.0).clamp(80.0, 3000.0);
                     Column::new(&col.name, &col.name)
                         .sortable()
@@ -498,6 +499,40 @@ impl ResultsTableDelegate {
         self.modified_cells.clear();
     }
 
+    /// Grow the derived row order to `live_rows` after a load-more append grew
+    /// the shared grid in place: Θ(new rows). Without an active filter the new
+    /// suffix is appended as identity; with one, only the new rows are matched.
+    /// A sorted view re-derives the full order instead (the rare, user-visible
+    /// case). Returns whether anything was extended.
+    pub(super) fn grow_to(&mut self, live_rows: usize) -> bool {
+        if self.order.len() >= live_rows {
+            return false;
+        }
+        if self.sort_col.is_some() {
+            self.apply_sort();
+            return true;
+        }
+        let old = self.order.len();
+        self.order.extend(old..live_rows);
+        if self.filter.is_empty() && self.column_filters.is_empty() {
+            self.filtered_order.extend(old..live_rows);
+        } else {
+            let query = self.filter.to_lowercase();
+            let prepared: Vec<PreparedFilter> = self
+                .column_filters
+                .iter()
+                .map(PreparedFilter::prepare)
+                .collect();
+            let new_ix: Vec<usize> = self.order.iter().skip(old).copied().collect();
+            for &ix in &new_ix {
+                if self.row_matches(ix, &query, &prepared) {
+                    self.filtered_order.push(ix);
+                }
+            }
+        }
+        true
+    }
+
     fn rebuild_filtered_order(&mut self) {
         if self.filter.is_empty() && self.column_filters.is_empty() {
             self.filtered_order = self.order.clone();
@@ -520,7 +555,8 @@ impl ResultsTableDelegate {
     }
 
     fn row_matches(&self, row_ix: usize, query: &str, prepared: &[PreparedFilter]) -> bool {
-        let Some(row) = self.rows().get(row_ix) else {
+        let guard = self.guard();
+        let Some(row) = guard.as_ref().and_then(|g| g.rows.get(row_ix)) else {
             return false;
         };
         let text_ok = query.is_empty()
@@ -539,27 +575,37 @@ impl ResultsTableDelegate {
     }
 
     fn apply_sort(&mut self) {
-        let mut order: Vec<usize> = (0..self.rows().len()).collect();
-        if let Some(col) = self.sort_col {
-            let rows = self.rows();
-            let cell_col = self.mapped(col);
-            let asc = self.sort_asc;
-            order.sort_by(|&a, &b| {
-                let ca = rows[a].get(cell_col);
-                let cb = rows[b].get(cell_col);
-                let ord = match (ca, cb) {
-                    (Some(a), Some(b)) => a.sort_cmp(b),
-                    (Some(_), None) => std::cmp::Ordering::Greater,
-                    (None, Some(_)) => std::cmp::Ordering::Less,
-                    (None, None) => std::cmp::Ordering::Equal,
-                };
-                if asc {
-                    ord
-                } else {
-                    ord.reverse()
-                }
-            });
-        }
+        // Compute the ordered index vector inside a scope so the grid's read
+        // guard (an immutable borrow of `self`) is released before we write
+        // `self.order`.
+        let order = {
+            let guard = self.guard();
+            let rows: &[Vec<ResultCell>] = match guard.as_ref() {
+                Some(g) => &g.rows,
+                None => &[],
+            };
+            let mut order: Vec<usize> = (0..rows.len()).collect();
+            if let Some(col) = self.sort_col {
+                let cell_col = self.mapped(col);
+                let asc = self.sort_asc;
+                order.sort_by(|&a, &b| {
+                    let ca = rows.get(a).and_then(|r| r.get(cell_col));
+                    let cb = rows.get(b).and_then(|r| r.get(cell_col));
+                    let ord = match (ca, cb) {
+                        (Some(a), Some(b)) => a.sort_cmp(b),
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    };
+                    if asc {
+                        ord
+                    } else {
+                        ord.reverse()
+                    }
+                });
+            }
+            order
+        };
         self.order = order;
         self.rebuild_filtered_order();
     }
@@ -574,13 +620,20 @@ impl ResultsTableDelegate {
         self.column_ix = index;
     }
 
-    pub(super) fn cell_named(&self, display_row: usize, name: &str) -> Option<&ResultCell> {
+    /// Resolve one named column's cell at a display row to an owned `ResultCell`.
+    /// Owned because the live grid is behind a read lock a borrow cannot cross.
+    pub(super) fn cell_named(&self, display_row: usize, name: &str) -> Option<ResultCell> {
         let display_col = *self.column_ix.get(name)?;
         if display_col == 0 {
             return None;
         }
         let row_ix = *self.filtered_order.get(display_row)?;
-        self.rows().get(row_ix)?.get(self.mapped(display_col - 1))
+        self.guard().and_then(|g| {
+            g.rows
+                .get(row_ix)?
+                .get(self.mapped(display_col - 1))
+                .cloned()
+        })
     }
 }
 
@@ -744,7 +797,8 @@ impl TableDelegate for ResultsTableDelegate {
             return self.render_edit_input(col_ix, cx);
         }
 
-        if let Some(row) = self.rows().get(row_ix) {
+        let guard = self.guard();
+        if let Some(row) = guard.as_ref().and_then(|g| g.rows.get(row_ix)) {
             if let Some(cell) = row.get(self.mapped(col_ix - 1)) {
                 let value = if cell.is_null {
                     String::new()

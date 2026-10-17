@@ -73,7 +73,7 @@ impl PostgresConnection {
         let result = self.execute_parameterized(sql, &[schema, table]).await?;
         match result {
             SqlResult::Query(q) => Ok(q
-                .rows
+                .rows_snapshot()
                 .into_iter()
                 .enumerate()
                 .map(|(i, row)| {
@@ -163,7 +163,7 @@ impl PostgresConnection {
         match result {
             SqlResult::Query(q) => {
                 let mut lines = Vec::new();
-                for row in q.rows {
+                for row in q.rows_snapshot() {
                     let col = row.cell_str(0);
                     let typ = row.cell_str(1);
                     let nullable = !row.cell_is(2, "NO");

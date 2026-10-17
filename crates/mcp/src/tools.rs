@@ -432,7 +432,10 @@ async fn handle_ping(state: &McpState) -> CallToolResult {
 fn format_result(result: &SqlResult) -> String {
     match result {
         SqlResult::Query(query) => {
-            if query.rows.is_empty() {
+            // One read-lock covers the whole text render (MCP is single-threaded
+            // here, so the lock is uncontended).
+            let grid = query.grid.read();
+            if grid.rows.is_empty() {
                 return "Empty result set.".into();
             }
             let mut output = String::new();
@@ -443,7 +446,7 @@ fn format_result(result: &SqlResult) -> String {
             output.push_str(&"-".repeat(60));
             output.push('\n');
             // Rows
-            for row in &query.rows {
+            for row in &grid.rows {
                 let vals: Vec<&str> = row
                     .iter()
                     .map(|c| if c.is_null { "NULL" } else { &c.value })
@@ -451,7 +454,7 @@ fn format_result(result: &SqlResult) -> String {
                 output.push_str(&vals.join(" | "));
                 output.push('\n');
             }
-            output.push_str(&format!("\n({} rows)", query.rows.len()));
+            output.push_str(&format!("\n({} rows)", grid.rows.len()));
             output
         }
         SqlResult::Modified(exec) => {
